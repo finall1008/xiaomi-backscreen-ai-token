@@ -1,0 +1,6 @@
+.gradle/
+.kotlin/
+.dsh/
+**/build/
+local.properties
+signing/

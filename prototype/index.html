@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Codex 用量 · 背屏卡片原型</title>
+<style>
+  html,body{margin:0;min-height:100vh;background:#16161d;display:flex;align-items:center;justify-content:center;font-family:-apple-system,"PingFang SC",sans-serif}
+  .stage{padding:32px}
+  /* 912x596 卡片画布；圆角比例与舞萌背屏一致 (8.4% / 12.9%) */
+  .device{position:relative;width:912px;height:596px;border-radius:77px;overflow:hidden;box-shadow:0 24px 80px rgba(0,0,0,.65)}
+  canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
+  /* 仅原型预览用：模拟左侧两枚摄像头遮挡，真实卡片不包含 */
+  .lens{position:absolute;left:3.29%;width:26.32%;aspect-ratio:1/1;border-radius:50%;pointer-events:none;
+    background:radial-gradient(circle at 38% 35%,#3a3f4a 0%,#14161c 55%,#05060a 78%,#2a2f3a 100%);
+    box-shadow:inset 0 0 0 6px #000,0 0 0 3px rgba(255,255,255,.06)}
+  .lens::after{content:"";position:absolute;left:36%;top:32%;width:16%;height:16%;border-radius:50%;
+    background:radial-gradient(circle at 35% 30%,rgba(140,180,255,.5),rgba(20,30,60,.08) 70%)}
+  .top{top:5.03%}.bottom{top:54.87%}
+  .hint{color:#7d7d8c;font-size:13px;text-align:center;margin-top:18px}
+</style>
+</head>
+<body>
+<div class="stage">
+  <div class="device">
+    <canvas id="rear" width="912" height="596"></canvas>
+    <div class="lens top"></div>
+    <div class="lens bottom"></div>
+  </div>
+  <div class="hint">912 × 596 · 左侧两枚圆圈为摄像头遮挡示意（仅本预览叠加，真实卡片不绘制）</div>
+</div>
+<script>
+// ?bare=1 时隐藏摄像头示意与提示，输出纯卡片（等同真实背屏绘制结果）
+if (/[?&]bare=1/.test(location.search)) {
+  document.addEventListener('DOMContentLoaded', function () {
+    document.querySelectorAll('.lens,.hint').forEach(function (el) { el.style.display = 'none'; });
+    document.body.style.background = '#000';
+  });
+}
+// 示例配置：真实 App 由 CardPackageBuilder 把 wham/usage 响应内联到这里。
+// 原型用相对当前时间的重置点，方便看到倒计时效果。
+(function(){
+  var now = Math.floor(Date.now()/1000);
+  // ?plan=pro 演示 Pro 套餐：无 5 小时窗口（primary_window 为空）
+  var pro = /[?&]plan=pro/.test(location.search);
+  window.CARD_CONFIG = {
+    provider: "codex",
+    planType: pro ? "pro" : "plus",
+    updatedAt: now - 180,
+    primary:   pro ? null : { usedPercent: 37, windowSeconds: 5*3600,    resetAt: now + 2*3600 + 14*60 },
+    secondary: { usedPercent: pro ? 41 : 78, windowSeconds: 7*24*3600,   resetAt: now + 3*24*3600 + 5*3600 }
+  };
+})();
+</script>
+<script src="main.js"></script>
+</body>
+</html>
