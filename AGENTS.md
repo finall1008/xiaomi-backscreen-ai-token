@@ -10,7 +10,8 @@
 - Debug 和 Release 始终使用与隔壁舞萌、卡片桥工程一致的所有者 `finall` 签名，不得使用默认 debug key、生成新密钥或切换签名。
 - 构建使用仓库相对路径 [signing/finall.jks](<signing/finall.jks>)，alias 为 `finall`。
 - 密码仅从 macOS 钥匙串读取。service 和 account 在本机 [signing/signing.properties](<signing/signing.properties>) 中配置（字段 `keychainService`、`keychainAccount`）。整个 `signing/` 目录已在 [.gitignore](<.gitignore>) 中忽略，禁止提交密钥、本机签名配置，禁止打印或落盘密码。
-- 密钥或钥匙串不可用时停止构建，不做替代。
+- 本地密钥或钥匙串不可用时停止构建，不做替代。
+- GitHub Actions 的 `CI=true` 构建使用仓库 Secrets 还原同一把 `finall` 密钥到 `signing/finall.jks`，密码仅通过环境变量传入；缺少材料即失败，禁止输出密码或回退其他签名。发布前校验 APK 签名证书 SHA-256 与本地所有者一致。
 - 手机安装必须 `adb install -r` 覆盖保留数据。遇到签名冲突报告错误，不得卸载用户应用绕过。
 
 ## 界面与背屏卡片

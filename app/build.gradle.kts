@@ -16,40 +16,52 @@ android {
         versionName = "0.1.0"
     }
     buildFeatures { compose = true; buildConfig = true }
-    compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
+    compileOptions { sourceCompatibility = JavaVersion.VERSION_21; targetCompatibility = JavaVersion.VERSION_21 }
     // Always use the owner's key for both variants; never fall back to a debug key.
     val finallKeystore = rootProject.file("signing/finall.jks")
     check(finallKeystore.isFile) { "Missing signing/finall.jks; refusing to use a different key." }
-    val signingProperties = Properties().apply {
-        rootProject.file("signing/signing.properties").inputStream().use { load(it) }
-    }
-    val keychainService = signingProperties.getProperty("keychainService")
-    val keychainAccount = signingProperties.getProperty("keychainAccount")
-    check(!keychainService.isNullOrBlank() && !keychainAccount.isNullOrBlank()) {
-        "Configure keychainService and keychainAccount in signing/signing.properties."
-    }
-    val keychain = providers.exec {
-        commandLine("/usr/bin/security", "find-generic-password",
-            "-s", keychainService, "-a", keychainAccount, "-w")
-        isIgnoreExitValue = true
-    }
-    check(keychain.result.get().exitValue == 0) {
-        "Cannot read finall signing password from macOS Keychain; refusing to use a different key."
-    }
-    val password = keychain.standardOutput.asText.get().trimEnd('\r', '\n')
-    check(password.isNotEmpty()) { "The finall signing password is empty." }
+    val isCi = providers.environmentVariable("CI").map(String::toBoolean).getOrElse(false)
     val finall = signingConfigs.create("finall") {
         storeFile = finallKeystore
-        storePassword = password
-        keyAlias = "finall"
-        keyPassword = password
+        if (isCi) {
+            fun ciProperty(name: String): String =
+                requireNotNull(providers.environmentVariable(name).orNull?.takeIf { it.isNotBlank() }) {
+                    "Missing $name for CI signing; refusing to use a different key."
+                }
+            keyAlias = ciProperty("RELEASE_KEY_ALIAS")
+            check(keyAlias == "finall") { "CI must use the existing finall signing alias." }
+            storePassword = ciProperty("RELEASE_STORE_PASSWORD")
+            keyPassword = ciProperty("RELEASE_KEY_PASSWORD")
+        } else {
+            val signingProperties = Properties().apply {
+                rootProject.file("signing/signing.properties").inputStream().use { load(it) }
+            }
+            val keychainService = signingProperties.getProperty("keychainService")
+            val keychainAccount = signingProperties.getProperty("keychainAccount")
+            check(!keychainService.isNullOrBlank() && !keychainAccount.isNullOrBlank()) {
+                "Configure keychainService and keychainAccount in signing/signing.properties."
+            }
+            val keychain = providers.exec {
+                commandLine("/usr/bin/security", "find-generic-password",
+                    "-s", keychainService, "-a", keychainAccount, "-w")
+                isIgnoreExitValue = true
+            }
+            check(keychain.result.get().exitValue == 0) {
+                "Cannot read finall signing password from macOS Keychain; refusing to use a different key."
+            }
+            val password = keychain.standardOutput.asText.get().trimEnd('\r', '\n')
+            check(password.isNotEmpty()) { "The finall signing password is empty." }
+            storePassword = password
+            keyAlias = "finall"
+            keyPassword = password
+        }
     }
     buildTypes {
         debug { signingConfig = finall }
         release { signingConfig = finall; isMinifyEnabled = false }
     }
 }
-kotlin { compilerOptions { jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17) } }
+kotlin { compilerOptions { jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_21) } }
 dependencies {
     implementation("androidx.core:core-ktx:1.17.0")
     implementation("androidx.activity:activity-compose:1.12.4")
@@ -59,6 +71,8 @@ dependencies {
     implementation("androidx.webkit:webkit:1.15.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
     implementation("top.yukonga.miuix.kmp:miuix-ui-android:0.9.4")
+    implementation("top.yukonga.miuix.kmp:miuix-icons:0.9.4")
+    implementation("top.yukonga.miuix.kmp:miuix-nav:0.9.4")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")
 }

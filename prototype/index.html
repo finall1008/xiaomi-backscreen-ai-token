@@ -2,13 +2,13 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<title>Codex 用量 · 背屏卡片原型</title>
+<title>AI 用量 · 背屏卡片原型</title>
 <style>
   html,body{margin:0;min-height:100vh;background:#16161d;display:flex;align-items:center;justify-content:center;font-family:-apple-system,"PingFang SC",sans-serif}
   .stage{padding:32px}
   /* 912x596 卡片画布；圆角比例与舞萌背屏一致 (8.4% / 12.9%) */
   .device{position:relative;width:912px;height:596px;border-radius:77px;overflow:hidden;box-shadow:0 24px 80px rgba(0,0,0,.65)}
-  canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
+  canvas{position:absolute;inset:0;width:100%;height:100%;display:block;cursor:pointer;touch-action:none}
   /* 仅原型预览用：模拟左侧两枚摄像头遮挡，真实卡片不包含 */
   .lens{position:absolute;left:3.29%;width:26.32%;aspect-ratio:1/1;border-radius:50%;pointer-events:none;
     background:radial-gradient(circle at 38% 35%,#3a3f4a 0%,#14161c 55%,#05060a 78%,#2a2f3a 100%);
@@ -26,7 +26,7 @@
     <div class="lens top"></div>
     <div class="lens bottom"></div>
   </div>
-  <div class="hint">912 × 596 · 左侧两枚圆圈为摄像头遮挡示意（仅本预览叠加，真实卡片不绘制）</div>
+  <div class="hint">912 × 596 · 点击首页卡片进入详情 · 左右滑动/← →键翻页 · 详情页上下滑动/滚轮看更多窗口 · ?providers=codex,kimi,deepseek,mimo 筛选来源 · ?codex=pro / ?kimi=new 演示套餐档位</div>
 </div>
 <script>
 // ?bare=1 时隐藏摄像头示意与提示，输出纯卡片（等同真实背屏绘制结果）
@@ -36,18 +36,58 @@ if (/[?&]bare=1/.test(location.search)) {
     document.body.style.background = '#000';
   });
 }
-// 示例配置：真实 App 由 CardPackageBuilder 把 wham/usage 响应内联到这里。
-// 原型用相对当前时间的重置点，方便看到倒计时效果。
-(function(){
-  var now = Math.floor(Date.now()/1000);
-  // ?plan=pro 演示 Pro 套餐：无 5 小时窗口（primary_window 为空）
-  var pro = /[?&]plan=pro/.test(location.search);
+// 示例配置：真实 App 由 CardPackageBuilder 把各来源快照内联到这里（只含已设置的来源）。
+// ?providers=codex,kimi 筛选演示来源；?providers=codex 演示单来源（无首页，直接详情）。
+// 套餐档位变体：?codex=pro（Pro 无 5 小时窗口）、?kimi=new（新套餐无每周窗口）
+(function () {
+  var now = Math.floor(Date.now() / 1000);
+  var codexPro = /[?&]codex=pro/.test(location.search);
+  var kimiNew = /[?&]kimi=new/.test(location.search);
+  var ALL = {
+    codex: {
+      id: 'codex', name: 'Codex', plan: codexPro ? 'pro' : 'plus', logoAsset: 'assets/openai.png',
+      // Pro 档无 5 小时窗口，仅周限额
+      windows: codexPro ? [
+        { title: '本周限额', usedPercent: 41, windowSeconds: 7 * 24 * 3600, resetAt: now + 3 * 24 * 3600 + 5 * 3600 }
+      ] : [
+        { title: '5 小时限额', usedPercent: 37, windowSeconds: 5 * 3600, resetAt: now + 2 * 3600 + 14 * 60 },
+        { title: '本周限额', usedPercent: 78, windowSeconds: 7 * 24 * 3600, resetAt: now + 3 * 24 * 3600 + 5 * 3600 }
+      ],
+      hint: codexPro ? '当前套餐无 5 小时限额' : null
+    },
+    kimi: {
+      id: 'kimi', name: 'Kimi Code', logoAsset: 'assets/kimi.png', plan: kimiNew ? 'plus' : 'andante',
+      // 对应 GET api.kimi.com/coding/v1/usages 的 usages.limit5h / limit7d / monthCode + boosterWallet
+      // 新套餐无每周窗口；老套餐 5h + 每周 + 月度三窗口（详情页上下滚动查看）
+      windows: kimiNew ? [
+        { title: '5 小时窗口', usedPercent: 12, windowSeconds: 5 * 3600, resetAt: now + 3 * 3600 + 41 * 60 },
+        { title: '本月额度', usedPercent: 46, windowSeconds: 30 * 24 * 3600, resetAt: now + 12 * 24 * 3600 }
+      ] : [
+        { title: '5 小时窗口', usedPercent: 12, windowSeconds: 5 * 3600, resetAt: now + 3 * 3600 + 41 * 60 },
+        { title: '本周额度', usedPercent: 64, windowSeconds: 7 * 24 * 3600, resetAt: now + 4 * 24 * 3600 },
+        { title: '本月额度', usedPercent: 41, windowSeconds: 30 * 24 * 3600, resetAt: now + 12 * 24 * 3600 }
+      ],
+      booster: { amount: 86.5, currency: 'CNY', monthlyUsed: 13.5 }
+    },
+    deepseek: {
+      id: 'deepseek', name: 'DeepSeek', plan: 'api', logoAsset: 'assets/deepseek.png',
+      // 对应 GET api.deepseek.com/user/balance 的 balance_infos[0]，仅余额
+      balance: { amount: 25.37, currency: 'CNY', granted: 3.00, toppedUp: 22.37, isAvailable: true }
+    },
+    mimo: {
+      id: 'mimo', name: '小米 MiMo', plan: 'standard', logoAsset: 'assets/mimo.png',
+      // 对应 platform.xiaomimimo.com/api/v1/tokenPlan/usage 的 month_total_token
+      windows: [
+        { title: '本月额度', usedPercent: 21, windowSeconds: 30 * 24 * 3600, resetAt: now + 18 * 24 * 3600 }
+      ],
+      credits: { used: 23.6e9, limit: 110e9, periodEnd: now + 18 * 24 * 3600 }
+    }
+  };
+  var m = location.search.match(/[?&]providers=([a-z,]+)/);
+  var ids = m ? m[1].split(',') : ['codex', 'kimi', 'deepseek', 'mimo'];
   window.CARD_CONFIG = {
-    provider: "codex",
-    planType: pro ? "pro" : "plus",
     updatedAt: now - 180,
-    primary:   pro ? null : { usedPercent: 37, windowSeconds: 5*3600,    resetAt: now + 2*3600 + 14*60 },
-    secondary: { usedPercent: pro ? 41 : 78, windowSeconds: 7*24*3600,   resetAt: now + 3*24*3600 + 5*3600 }
+    providers: ids.map(function (id) { return ALL[id]; }).filter(Boolean)
   };
 })();
 </script>
