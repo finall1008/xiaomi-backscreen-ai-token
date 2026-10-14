@@ -4,8 +4,8 @@ import org.json.JSONObject
 import java.net.URI
 
 /** Obtain the platform's signed Passport callback; never guess or persist this URL. */
-internal fun requestMimoLoginUrl(): String {
-    val response = HttpUrlConnectionTransport().execute(
+internal fun requestMimoLoginUrl(transport: CodexTransport = HttpUrlConnectionTransport()): String {
+    val response = transport.execute(
         HttpRequest("https://platform.xiaomimimo.com/api/v1/tokenPlan/usage", "GET"),
     )
     val url = runCatching { JSONObject(response.body).optString("loginUrl") }.getOrNull()

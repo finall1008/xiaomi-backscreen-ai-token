@@ -13,6 +13,7 @@ import dev.finall.aitoken.model.ProviderAuthException
 import dev.finall.aitoken.model.ProviderCardEntry
 import dev.finall.aitoken.model.ProviderId
 import dev.finall.aitoken.model.ProviderSnapshot
+import dev.finall.aitoken.work.AuthNotifier
 import dev.finall.aitoken.work.UsageRefreshWorker
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -209,6 +210,7 @@ class UsageViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun applyRefresh(id: ProviderId, success: String) {
         try {
             val snapshot = withContext(Dispatchers.IO) { repo.refresh(id) }
+            AuthNotifier.reset(getApplication(), id)
             updateProvider(id) { it.copy(configured = true, snapshot = snapshot, authExpired = false) }
             reloadPreview()
             setStatus(success)

@@ -109,7 +109,15 @@ class ProviderRepository(private val context: Context) {
         return when (id) {
             ProviderId.KIMI -> kimiClient.fetch(secret, nowSeconds)
             ProviderId.DEEPSEEK -> deepSeekClient.fetch(secret, nowSeconds)
-            ProviderId.MIMO -> mimoClient.fetch(secret, nowSeconds)
+            ProviderId.MIMO -> try {
+                mimoClient.fetch(secret, nowSeconds)
+            } catch (_: ProviderAuthException) {
+                val renewed = restoreMimoSession(transport)
+                val snapshot = mimoClient.fetch(renewed, nowSeconds)
+                // Persist only after the renewed session successfully reads usage.
+                secrets.getValue(id).save(renewed)
+                snapshot
+            }
             ProviderId.CODEX -> throw UnsupportedOperationException("Codex 使用设备码登录，不能直接保存密钥")
         }
     }

@@ -575,6 +575,7 @@ internal fun MimoWebLogin(
                             }.getOrNull() ?: return
                             if (!cookie.contains(MIMO_TOKEN_MARK)) return
                             if (!consumed.compareAndSet(false, true)) return
+                            CookieManager.getInstance().flush()
                             val deliver = callback.onCookie
                             if (view == null) deliver(cookie) else view.post { deliver(cookie) }
                         }

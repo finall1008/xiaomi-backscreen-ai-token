@@ -16,7 +16,11 @@ internal data class HttpRequest(
     override fun toString(): String = "HttpRequest(method=$method, url=$url)"
 }
 
-internal data class HttpResponse(val status: Int, val body: String)
+internal data class HttpResponse(
+    val status: Int,
+    val body: String,
+    val headers: Map<String, List<String>> = emptyMap(),
+)
 
 internal fun interface CodexTransport {
     fun execute(request: HttpRequest): HttpResponse
@@ -38,7 +42,7 @@ internal class HttpUrlConnectionTransport : CodexTransport {
             }
             val status = connection.responseCode
             val stream = if (status in 200..299) connection.inputStream else connection.errorStream
-            return HttpResponse(status, readLimited(stream))
+            return HttpResponse(status, readLimited(stream), connection.headerFields.filterKeys { it != null })
         } catch (error: IOException) {
             throw IOException("网络请求失败")
         } finally {
