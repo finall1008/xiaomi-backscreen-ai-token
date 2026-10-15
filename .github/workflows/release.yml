@@ -13,9 +13,6 @@ concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
-env:
-  CI: "true"
-
 jobs:
   release:
     runs-on: ubuntu-latest
@@ -23,84 +20,46 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Set up JDK 21
-        uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: "21"
-          cache: gradle
-
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "22.23.1"
+          cache: npm
 
-      - name: Install Android SDK components
-        run: |
-          set -euo pipefail
-          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
-          (set +o pipefail; yes | "$SDKMANAGER" --licenses > /dev/null)
-          "$SDKMANAGER" "platforms;android-37.0" "build-tools;36.0.0"
+      - name: Install locked dependencies
+        run: npm ci --ignore-scripts
 
-      - name: Restore release signing key
-        env:
-          RELEASE_JKS_BASE64: ${{ secrets.RELEASE_JKS_BASE64 }}
-          RELEASE_STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
-          RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
-          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
-        run: |
-          set -euo pipefail
-          : "${RELEASE_JKS_BASE64:?missing secret RELEASE_JKS_BASE64}"
-          : "${RELEASE_STORE_PASSWORD:?missing secret RELEASE_STORE_PASSWORD}"
-          : "${RELEASE_KEY_ALIAS:?missing secret RELEASE_KEY_ALIAS}"
-          : "${RELEASE_KEY_PASSWORD:?missing secret RELEASE_KEY_PASSWORD}"
-          mkdir -p signing
-          printf '%s' "$RELEASE_JKS_BASE64" | base64 -d > signing/finall.jks
-          chmod 600 signing/finall.jks
+      - name: Test module and card interactions
+        run: npm test
 
-      - name: Test card interactions
-        run: node scripts/test-card-pointer.cjs
+      - name: Build module ZIP
+        run: npm run build
 
-      - name: Test and build release APK
-        env:
-          RELEASE_STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
-          RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
-          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
-        run: ./gradlew :app:testDebugUnitTest :app:assembleRelease
+      - name: Verify committed repository import files are up to date
+        run: git diff --exit-code -- card webroot background
 
-      - name: Verify owner signature
-        run: |
-          set -euo pipefail
-          APK=app/build/outputs/apk/release/app-release.apk
-          CERTS=$("$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs "$APK")
-          printf '%s\n' "$CERTS"
-          EXPECTED=33f92075e81fc19c93bb58f83c0db334888e635926ef400849569b91f86102f5
-          printf '%s\n' "$CERTS" | grep -Fqx "Signer #1 certificate SHA-256 digest: $EXPECTED"
-
-      - name: Stage release artifact
+      - name: Verify release tag matches module version
         if: startsWith(github.ref, 'refs/tags/')
         run: |
-          set -euo pipefail
-          TAG="${GITHUB_REF_NAME}"
-          mkdir -p dist
-          cp app/build/outputs/apk/release/app-release.apk "dist/ai-usage-${TAG}.apk"
+          node -e 'const m=require("./module.json");if(process.env.GITHUB_REF_NAME!==`v${m.version}`)throw Error("Tag must match module.json version")'
 
-      - name: Upload APK artifact
+      - name: Upload module artifact
         uses: actions/upload-artifact@v5
         with:
-          name: ai-usage-release-apk
-          path: app/build/outputs/apk/release/app-release.apk
+          name: ai-usage-module
+          path: dist/ai-usage-*.zip
+          if-no-files-found: error
 
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/ai-usage-${{ github.ref_name }}.apk
-          generate_release_notes: true
+          files: dist/ai-usage-*.zip
+          body: |
+            AI 用量背屏模块（rear-card-bridge API v2），支持 Codex、Kimi Code、DeepSeek 与小米 MiMo。
 
-      - name: Remove temporary signing material
-        if: always()
-        run: |
-          TARGET="$GITHUB_WORKSPACE/signing/finall.jks"
-          test "$(realpath -m "$TARGET")" = "$GITHUB_WORKSPACE/signing/finall.jks"
-          rm -f -- "$TARGET"
+            - 可在卡片桥中直接从仓库导入：https://github.com/finall1008/xiaomi-backscreen-ai-token（main）。
+            - 也可下载本 Release 的 ai-usage ZIP，通过「安装 ZIP 模块」安装。
+            - 首页下拉刷新全部来源，详情顶部下拉只刷新当前来源；后台周期由桥统一设置。
+            - 使用包含模块独立网页登录会话与统一后台调度的新版卡片桥。
+          generate_release_notes: true

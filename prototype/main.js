@@ -8,7 +8,7 @@
   var providers = cfg.providers || [];
   var cv = document.getElementById('rear');
   var ctx = cv.getContext('2d');
-  var renderQueued = false;
+  var renderQueued = false, afterDraw = null;
   var W = window.CANVAS_W || 912, H = window.CANVAS_H || 596;
 
   // 左侧约 296px 为摄像头区域，内容区右移
@@ -120,14 +120,18 @@
   // ---------- 静态 logo ----------
   // 静态 logo：随载体包 assets/ 安装，不占用热更新脚本体积。
   // 无位图的来源退回首字母圆角方块。
-  var logos = {};
-  providers.forEach(function (p) {
-    if (!p.logoAsset) return;
-    var img = new Image();
-    img.onload = function () { logos[p.id] = img; requestDraw(); };
-    img.onerror = function () { requestDraw(); };
-    img.src = p.logoAsset;
-  });
+  var logos = {}, logoPaths = {};
+  function loadLogos() {
+    providers.forEach(function (p) {
+      if (!p.logoAsset || logoPaths[p.id] === p.logoAsset) return;
+      logoPaths[p.id] = p.logoAsset;
+      var img = new Image();
+      img.onload = function () { logos[p.id] = img; requestDraw(); };
+      img.onerror = function () { requestDraw(); };
+      img.src = p.logoAsset;
+    });
+  }
+  loadLogos();
 
   function brandMark(p, x, y, size) {
     var img = logos[p.id];
@@ -259,7 +263,7 @@
     ctx.fillText('AI 用量', L, 56);
     ctx.fillStyle = C.sub;
     ctx.font = '400 22px sans-serif';
-    ctx.fillText(providers.length + ' 个来源' + (cfg.updatedAt ? ' · 更新于 ' + fmtClock(cfg.updatedAt) : ''), L, 91);
+    ctx.fillText(refreshHint() || providers.length + ' 个来源' + (cfg.updatedAt ? ' · 更新于 ' + fmtClock(cfg.updatedAt) : ''), L, 91);
     badge(R, 62, '总览');
 
     for (var i = 0; i < providers.length; i++) drawHomeCell(providers[i], i);
@@ -275,7 +279,7 @@
     ctx.fillText(p.name, L + 52, 56);
     ctx.fillStyle = C.sub;
     ctx.font = '400 22px sans-serif';
-    ctx.fillText('套餐用量' + (p.updatedAt || cfg.updatedAt ? ' · 更新于 ' + fmtClock(p.updatedAt || cfg.updatedAt) : ''), L + 52, 91);
+    ctx.fillText(refreshHint() || '套餐用量' + (p.updatedAt || cfg.updatedAt ? ' · 更新于 ' + fmtClock(p.updatedAt || cfg.updatedAt) : ''), L + 52, 91);
     badge(R, 62, (p.plan || '未知套餐').toUpperCase());
   }
 
@@ -447,7 +451,7 @@
     ctx.fillText('尚未设置用量来源', (L + R) / 2, H / 2 - 20);
     ctx.fillStyle = C.dim;
     ctx.font = '400 23px sans-serif';
-    ctx.fillText('请在 App 中添加并登录来源', (L + R) / 2, H / 2 + 22);
+    ctx.fillText(cfg.emptyMessage || '请在卡片桥的模块设置中添加来源', (L + R) / 2, H / 2 + 22);
     ctx.textAlign = 'left';
   }
 
@@ -460,6 +464,31 @@
   // 详情页纵向滚动（多窗口来源，如 Kimi 老套餐）
   var SCROLL_TOP = 110, SCROLL_H = 456;
   var detailScroll = 0, detailMaxScroll = 0;
+  var refreshHandler = null, refreshing = false, refreshError = false, pullDistance = 0;
+  var PULL_THRESHOLD = 80;
+
+  function refreshHint() {
+    if (refreshing) return '刷新中…';
+    if (pullDistance > 0) return pullDistance >= PULL_THRESHOLD ? '松开刷新' : '下拉刷新';
+    return refreshError ? '刷新失败，请重试' : '';
+  }
+
+  function refreshCurrent() {
+    if (!refreshHandler || refreshing) return;
+    var id = providers.length && !(hasHome && page === 0)
+      ? providers[hasHome ? page - 1 : page].id : null;
+    refreshing = true;
+    refreshError = false;
+    requestDraw();
+    Promise.resolve().then(function () { return refreshHandler(id); }).then(function () {
+      refreshing = false;
+      requestDraw();
+    }, function () {
+      refreshing = false;
+      refreshError = true;
+      requestDraw();
+    });
+  }
 
   function drawDots() {
     if (pageCount <= 1) return;
@@ -494,32 +523,67 @@
     ctx.fillRect(0, 0, W, H);
 
     detailMaxScroll = 0;
-    if (!providers.length) { drawEmpty(); return; }
-    if (hasHome && page === 0) drawHome();
-    else drawDetail(providers[hasHome ? page - 1 : page]);
-    drawDots();
+    if (!providers.length) drawEmpty();
+    else {
+      if (hasHome && page === 0) drawHome();
+      else drawDetail(providers[hasHome ? page - 1 : page]);
+      drawDots();
+    }
+    var done = afterDraw;
+    afterDraw = null;
+    if (done) done();
   }
+
+  // 模块只替换数据，不重建手势监听或改变既有布局。
+  window.AiUsageCard = {
+    onRefresh: function (handler) { refreshHandler = handler; },
+    update: function (config, done) {
+      var selected = providers.length && !(hasHome && page === 0)
+        ? providers[hasHome ? page - 1 : page].id : null;
+      cfg = config || {};
+      providers = cfg.providers || [];
+      hasHome = providers.length >= 2;
+      pageCount = hasHome ? providers.length + 1 : providers.length;
+      var index = providers.map(function (p) { return p.id; }).indexOf(selected);
+      page = index < 0 ? 0 : index + (hasHome ? 1 : 0);
+      detailScroll = 0;
+      downX = downY = lastY = dragAxis = null;
+      pullDistance = 0;
+      afterDraw = typeof done === 'function' ? done : null;
+      loadLogos();
+      requestDraw();
+    }
+  };
 
   function goTo(i) {
     page = Math.max(0, Math.min(pageCount - 1, i));
     detailScroll = 0;
+    pullDistance = 0;
+    refreshError = false;
     requestDraw();
   }
 
   // ---------- 交互（原型预览：鼠标/触摸/键盘；运行时以载体事件为准） ----------
   var downX = null, downY = null, lastY = null, dragAxis = null;
 
-  function onDown(x, y) { downX = x; downY = lastY = y; dragAxis = null; }
+  var pullFromTop = false;
+  function onDown(x, y) {
+    downX = x; downY = lastY = y; dragAxis = null;
+    pullFromTop = detailScroll === 0;
+  }
 
   function onMove(x, y) {
     if (downX == null) return;
     var dx = x - downX, dy = y - lastY;
     if (!dragAxis) {
       var tdy = y - downY;
-      if (Math.abs(tdy) > Math.abs(dx) + 8 && detailMaxScroll > 0) dragAxis = 'v';
+      if (Math.abs(tdy) > Math.abs(dx) + 8) dragAxis = 'v';
       else if (Math.abs(dx) > Math.abs(tdy) + 8) dragAxis = 'h';
     }
-    if (dragAxis === 'v' && detailMaxScroll > 0) {
+    if (dragAxis === 'v' && pullFromTop && refreshHandler && y > downY) {
+      pullDistance = y - downY;
+      requestDraw();
+    } else if (dragAxis === 'v' && detailMaxScroll > 0) {
       detailScroll = Math.max(0, Math.min(detailMaxScroll, detailScroll - dy));
       lastY = y;
       requestDraw();
@@ -532,7 +596,12 @@
     var axis = dragAxis;
     downX = downY = lastY = null;
     dragAxis = null;
-    if (axis === 'v') return; // 已作为纵向滚动处理
+    pullDistance = 0;
+    if (axis === 'v' || (!axis && dy > Math.abs(dx) + 8 && dy >= PULL_THRESHOLD)) {
+      if (pullFromTop && dy >= PULL_THRESHOLD && dy > Math.abs(dx) + 8) refreshCurrent();
+      requestDraw();
+      return;
+    }
     if (Math.abs(dx) >= 60 && Math.abs(dx) > Math.abs(dy)) {
       goTo(page + (dx < 0 ? 1 : -1)); // 左滑下一页，右滑上一页
       return;
@@ -573,6 +642,7 @@
       downX = downY = lastY = null;
       dragAxis = null;
       activePointer = null;
+      if (pullDistance) { pullDistance = 0; requestDraw(); }
     }
     cv.addEventListener('pointerdown', function (e) {
       if (e.isPrimary === false || downX != null) return;

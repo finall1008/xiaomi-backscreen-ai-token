@@ -1,0 +1,755 @@
+/*
+ * AI 用量背屏 · 模块设置页（webroot/main.js）。
+ *
+ * 脚本顺序：bridge-shim.js（宿主注入，定义 window.bridge）→ core.js（构建复制，
+ * 定义 window.AiUsageCore）→ 本文件。bridge 为 undefined（普通网页打开）时只提示
+ * 「请在卡片桥内打开模块设置」并禁用写入与网络操作：不伪造桥、不回退浏览器本地存储、
+ * 不发送任何真实请求，也不演示数据。
+ *
+ * 职责：
+ *   - Kimi Code / DeepSeek 保存 API Key 并刷新；Codex 设备码登录（可取消、外链验证、手动复制）；
+ *     MiMo 使用桥的独立登录窗口，关闭窗口后检查登录；Cookie 留在宿主的模块 Profile 中。
+ *   - 凭据只经 core 写入 bridge.storage。
+ *     凭据不进日志、不进预览消息、不落浏览器本地存储。
+ *   - 用量或授权变化后调用 bridge.card.requestRefresh() 让卡片重读缓存。
+ */
+(function () {
+  'use strict';
+
+  /** MiMo 通过原生网络使用模块 Profile；其他来源保持 WebView fetch。 */
+  var WEBUI_REFRESHABLE = { codex: true, kimi: true, deepseek: true, mimo: true };
+
+  var bridge = window.bridge;
+  var core = window.AiUsageCore;
+  var client = null;
+  var rows = [];
+  var rowErrors = {};
+  var busy = false;
+  var previewReady = false;
+  var device = null;
+
+  var dom = {};
+  /** id -> { article, badge, cache, metrics, status, error, ... } */
+  var ui = {};
+
+  /* ---------- 基础工具 ---------- */
+
+  function byId(id) { return document.getElementById(id); }
+
+  function esc(value) {
+    return String(value == null ? '' : value)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+
+  function pad2(n) { return n < 10 ? '0' + n : String(n); }
+
+  function formatClock(value) {
+    var seconds = Number(value);
+    if (!isFinite(seconds) || seconds <= 0) return '';
+    if (seconds > 1e12) seconds = Math.floor(seconds / 1000);
+    var date = new Date(seconds * 1000);
+    return date.getFullYear() + '-' + pad2(date.getMonth() + 1) + '-' + pad2(date.getDate()) +
+      ' ' + pad2(date.getHours()) + ':' + pad2(date.getMinutes());
+  }
+
+  function moneyText(balance) {
+    var amount = Number(balance && balance.amount);
+    if (!isFinite(amount)) return '—';
+    var symbol = balance.currency === 'USD' ? '$' : '¥';
+    return symbol + amount.toFixed(2);
+  }
+
+  function bigText(value) {
+    var n = Number(value);
+    if (!isFinite(n)) return '—';
+    if (n >= 1e9) return (n / 1e9).toFixed(n >= 1e11 ? 0 : 1) + 'B';
+    if (n >= 1e6) return (n / 1e6).toFixed(n >= 1e8 ? 0 : 1) + 'M';
+    if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+    return String(n);
+  }
+
+  function periodText(value) {
+    if (value == null || value === '') return '';
+    if (typeof value === 'string' && !/^\d+(\.\d+)?$/.test(value)) return value;
+    return formatClock(value);
+  }
+
+  /** 错误只显示 core / 传输层给出的安全文案，绝不附带原始响应内容。 */
+  function errorText(error) {
+    if (!error) return '操作失败';
+    var code = error.code;
+    if (code === 'AUTH_REQUIRED') return error.message || '尚未登录或凭据已失效';
+    if (code === 'CANCELLED') return '已取消';
+    if (code === 'TIMEOUT') return '请求超时，结果未知（未自动重试）';
+    if (error.message) return String(error.message);
+    if (code) return '操作失败（' + code + '）';
+    return '操作失败';
+  }
+
+  function statusText(row) {
+    var status = row && row.status;
+    if (!status) return '';
+    var message = status.message || '';
+    if (!message && status.code === 'AUTH_REQUIRED') message = '登录已失效，请重新授权';
+    if (!message && status.code) message = '状态：' + status.code;
+    var time = formatClock(status.updatedAt);
+    return message ? (time ? message + ' · ' + time : message) : '';
+  }
+
+  function metricLines(snapshot) {
+    var source = snapshot || {};
+    var lines = [];
+    var windows = source.windows || [];
+    for (var i = 0; i < windows.length; i++) {
+      var win = windows[i];
+      if (!win || typeof win.usedPercent !== 'number') continue;
+      var percent = Math.max(0, Math.min(100, Math.round(win.usedPercent)));
+      var line = (win.title || '用量窗口') + ' · ' + percent + '%';
+      var reset = formatClock(win.resetAt);
+      if (reset) line += ' · 重置 ' + reset;
+      lines.push(line);
+    }
+    if (source.balance) {
+      var balanceLine = '余额 ' + moneyText(source.balance);
+      if (source.balance.isAvailable === false) balanceLine += '（不足）';
+      lines.push(balanceLine);
+    }
+    if (source.credits) {
+      var creditsLine = 'Credits ' + bigText(source.credits.used) + ' / ' + bigText(source.credits.limit);
+      var period = periodText(source.credits.periodEnd);
+      if (period) creditsLine += ' · 周期至 ' + period;
+      lines.push(creditsLine);
+    }
+    if (source.booster) {
+      var boosterLine = '加油包 ' + moneyText(source.booster);
+      if (source.booster.monthlyUsed != null) {
+        boosterLine += ' · 本月已用 ' + moneyText({ amount: source.booster.monthlyUsed, currency: source.booster.currency });
+      }
+      lines.push(boosterLine);
+    }
+    return lines;
+  }
+
+  /* ---------- 设置页网络传输 ---------- */
+
+  /**
+   * MiMo 的显式 cookies 选项交给原生桥，保留响应头与手动跳转控制。
+   * 其他来源使用 fetch + AbortController 超时，默认 30 秒，credentials:'omit'；
+   * 失败只抛安全的通用错误，不附带原始响应。
+   */
+  function request(options) {
+    if (options.cookies !== undefined) return bridge.net.request(options);
+    return new Promise(function (resolve, reject) {
+      var controller = new window.AbortController();
+      var timeoutMs = options && options.timeoutMs != null ? Number(options.timeoutMs) : 30000;
+      if (!isFinite(timeoutMs) || timeoutMs < 0) timeoutMs = 30000;
+      var timedOut = false;
+      var timer = null;
+      if (timeoutMs > 0) {
+        timer = window.setTimeout(function () {
+          timedOut = true;
+          controller.abort();
+        }, timeoutMs);
+      }
+      window.fetch(options.url, {
+        method: options.method || 'GET',
+        headers: options.headers || {},
+        body: options.body,
+        credentials: 'omit',
+        cache: 'no-store',
+        signal: controller.signal
+      }).then(function (response) {
+        return response.text().then(function (body) {
+          if (timer !== null) window.clearTimeout(timer);
+          resolve({ status: response.status, body: body });
+        });
+      }).catch(function () {
+        if (timer !== null) window.clearTimeout(timer);
+        var error = new Error(timedOut ? '网络请求超时，结果未知' : '网络请求失败，请稍后重试');
+        error.code = timedOut ? 'TIMEOUT' : 'ERROR';
+        reject(error);
+      });
+    });
+  }
+
+  /* ---------- 来源卡片渲染 ---------- */
+
+  function authKind(id) {
+    if (id === 'codex') return 'device';
+    if (id === 'mimo') return 'mimo';
+    return 'key';
+  }
+
+  function authHtml(id) {
+    var kind = authKind(id);
+    if (kind === 'device') {
+      return '' +
+        '<div class="device-panel" id="device-' + id + '" hidden>' +
+        '  <p class="muted">在浏览器中打开验证页面，确认下方验证码后回到本页等待完成。</p>' +
+        '  <div class="code-row">' +
+        '    <label class="field"><span>验证码</span>' +
+        '      <input id="code-' + id + '" type="text" readonly spellcheck="false">' +
+        '    </label>' +
+        '    <button id="copy-' + id + '" type="button" class="btn">复制</button>' +
+        '  </div>' +
+        '  <div class="actions">' +
+        '    <a id="verify-' + id + '" class="btn btn-link" href="#" target="_blank" rel="noreferrer noopener">打开验证页面</a>' +
+        '    <button id="cancel-device-' + id + '" type="button" class="btn">取消登录</button>' +
+        '  </div>' +
+        '  <p class="device-status" id="device-status-' + id + '" role="status">等待验证中…</p>' +
+        '</div>' +
+        '<div class="actions">' +
+        '  <button id="login-' + id + '" type="button" class="btn btn-primary">设备码登录</button>' +
+        '  <button id="refresh-' + id + '" type="button" class="btn">刷新用量</button>' +
+        '  <button id="clear-' + id + '" type="button" class="btn btn-danger">退出登录</button>' +
+        '</div>';
+    }
+    if (kind === 'mimo') {
+      return '' +
+        '<p class="notice">在卡片桥的独立窗口中登录小米账号，完成后关闭窗口，再点“检查登录”。设置页与背屏共用模块会话，无需复制 Cookie。需要支持模块独立会话的新版卡片桥。</p>' +
+        '<div class="actions">' +
+        '  <button id="login-' + id + '" type="button" class="btn btn-primary">网页登录</button>' +
+        '  <button id="check-' + id + '" type="button" class="btn">检查登录</button>' +
+        '  <button id="refresh-' + id + '" type="button" class="btn">刷新用量</button>' +
+        '  <button id="clear-' + id + '" type="button" class="btn btn-danger">移除来源</button>' +
+        '</div>' +
+        '<p class="muted">移除只清除本模块的来源与用量缓存，不清除网页登录会话。</p>';
+    }
+    return '' +
+      '<label class="field"><span>API Key</span>' +
+      '  <input id="secret-' + id + '" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="sk-…">' +
+      '</label>' +
+      '<div class="actions">' +
+      '  <button id="save-' + id + '" type="button" class="btn btn-primary">保存密钥</button>' +
+      '  <button id="refresh-' + id + '" type="button" class="btn">刷新用量</button>' +
+      '  <button id="clear-' + id + '" type="button" class="btn btn-danger">退出登录</button>' +
+      '</div>';
+  }
+
+  function renderProviders() {
+    var providers = (core && core.providers) || [];
+    var html = '';
+    for (var i = 0; i < providers.length; i++) {
+      var meta = providers[i] || {};
+      var id = String(meta.id || '');
+      if (!id) continue;
+      var name = meta.name || id;
+      var logo = meta.logoAsset || '';
+      var initial = name.charAt(0).toUpperCase();
+      html += '' +
+        '<article class="provider" id="provider-' + esc(id) + '">' +
+        '  <div class="provider-head">' +
+        '    <span class="provider-logo" data-initial="' + esc(initial) + '">' +
+        (logo ? '<img src="' + esc(logo) + '" alt="">' : '') +
+        '    </span>' +
+        '    <div class="provider-title"><h3>' + esc(name) + '</h3><span class="badge badge-off" id="badge-' + esc(id) + '">未配置</span></div>' +
+        '    <span class="provider-cache" id="cache-' + esc(id) + '">暂无缓存</span>' +
+        '  </div>' +
+        '  <ul class="metrics" id="metrics-' + esc(id) + '"></ul>' +
+        '  <p class="provider-status" id="status-' + esc(id) + '"></p>' +
+        '  <div class="banner banner-error" id="error-' + esc(id) + '" role="alert" hidden></div>' +
+        '  ' + authHtml(id) +
+        '</article>';
+    }
+    dom.providers.innerHTML = html;
+    var images = dom.providers.querySelectorAll ? dom.providers.querySelectorAll('img') : [];
+    for (var k = 0; k < images.length; k++) {
+      // logo 缺失时移除图片，露出首字母占位；不依赖内联事件（兼容严格 CSP）。
+      images[k].onerror = (function (img) {
+        return function () { if (img.parentNode) img.parentNode.removeChild(img); };
+      })(images[k]);
+    }
+    for (var j = 0; j < providers.length; j++) {
+      var provider = providers[j] || {};
+      if (provider.id) wireProvider(String(provider.id));
+    }
+  }
+
+  function wireProvider(id) {
+    ui[id] = {
+      badge: byId('badge-' + id),
+      cache: byId('cache-' + id),
+      metrics: byId('metrics-' + id),
+      status: byId('status-' + id),
+      error: byId('error-' + id),
+      secret: byId('secret-' + id),
+      save: byId('save-' + id),
+      refresh: byId('refresh-' + id),
+      clear: byId('clear-' + id),
+      login: byId('login-' + id),
+      check: byId('check-' + id),
+      copy: byId('copy-' + id),
+      cancelDevice: byId('cancel-device-' + id),
+      devicePanel: byId('device-' + id),
+      deviceStatus: byId('device-status-' + id),
+      code: byId('code-' + id),
+      verify: byId('verify-' + id)
+    };
+    var entry = ui[id];
+    if (entry.save) entry.save.addEventListener('click', function () { saveSecret(id); });
+    if (entry.refresh) entry.refresh.addEventListener('click', function () { refreshProvider(id); });
+    if (entry.clear) entry.clear.addEventListener('click', function () { clearProvider(id); });
+    if (entry.login) entry.login.addEventListener('click', function () {
+      if (id === 'mimo') startMimoLogin();
+      else startDeviceLogin(id);
+    });
+    if (entry.check) entry.check.addEventListener('click', function () { checkMimoLogin(); });
+    if (entry.cancelDevice) entry.cancelDevice.addEventListener('click', function () { cancelDeviceSession('已取消登录'); });
+    if (entry.copy) entry.copy.addEventListener('click', function () { copyCode(id); });
+  }
+
+  function providerName(id) {
+    var providers = (core && core.providers) || [];
+    for (var i = 0; i < providers.length; i++) {
+      if (providers[i] && String(providers[i].id) === id) return providers[i].name || id;
+    }
+    return id;
+  }
+
+  /* ---------- 状态展示 ---------- */
+
+  function showGlobal(message) {
+    dom.globalStatus.textContent = message || '';
+  }
+
+  function showGlobalError(message) {
+    dom.globalError.textContent = message || '';
+    dom.globalError.hidden = !message;
+  }
+
+  function showRowError(id, message) {
+    rowErrors[id] = message || '';
+    var entry = ui[id];
+    if (!entry || !entry.error) return;
+    entry.error.textContent = rowErrors[id];
+    entry.error.hidden = !rowErrors[id];
+  }
+
+  function updateEnabled() {
+    var hasClient = !!client;
+    var ready = hasClient && !busy;
+    if (dom.refreshAll) dom.refreshAll.disabled = !ready;
+    for (var id in ui) {
+      if (!Object.prototype.hasOwnProperty.call(ui, id)) continue;
+      var entry = ui[id];
+      var row = findRow(id);
+      var configured = !!(row && row.configured);
+      var inSession = !!(device && device.id === id);
+      if (entry.secret) entry.secret.disabled = !ready;
+      if (entry.save) entry.save.disabled = !ready;
+      if (entry.refresh) entry.refresh.disabled = !ready || !configured;
+      if (entry.clear) entry.clear.disabled = !ready || !configured;
+      if (entry.login) entry.login.disabled = !ready || inSession;
+      if (entry.check) entry.check.disabled = !ready;
+      if (entry.cancelDevice) entry.cancelDevice.disabled = !inSession;
+      if (entry.copy) entry.copy.disabled = !inSession;
+    }
+  }
+
+  function setBusy(value, message) {
+    busy = value;
+    if (message) showGlobal(message);
+    updateEnabled();
+  }
+
+  function findRow(id) {
+    for (var i = 0; i < rows.length; i++) {
+      if (rows[i] && String(rows[i].id) === id) return rows[i];
+    }
+    return null;
+  }
+
+  function render() {
+    for (var id in ui) {
+      if (!Object.prototype.hasOwnProperty.call(ui, id)) continue;
+      var entry = ui[id];
+      var row = findRow(id);
+      var configured = !!(row && row.configured);
+      if (entry.badge) {
+        entry.badge.textContent = configured ? '已配置' : '未配置';
+        entry.badge.className = 'badge ' + (configured ? 'badge-on' : 'badge-off');
+      }
+      var snapshot = row && row.snapshot;
+      if (entry.cache) {
+        var updated = snapshot && formatClock(snapshot.updatedAt);
+        entry.cache.textContent = updated ? '缓存 ' + updated : '暂无缓存';
+      }
+      if (entry.metrics) {
+        var lines = configured ? metricLines(snapshot) : [];
+        var html = '';
+        for (var i = 0; i < lines.length; i++) html += '<li>' + esc(lines[i]) + '</li>';
+        if (!lines.length) html = '<li class="muted">' + (configured
+          ? '暂无用量数据，点刷新获取'
+          : (id === 'mimo' ? '尚未确认网页登录，请登录后检查' : '尚未配置凭据')) + '</li>';
+        entry.metrics.innerHTML = html;
+      }
+      if (entry.status) entry.status.textContent = statusText(row);
+      showRowError(id, rowErrors[id]);
+    }
+    updateEnabled();
+  }
+
+  /* ---------- 数据读写 ---------- */
+
+  async function reload() {
+    if (!client) return;
+    try {
+      rows = await client.state();
+      showGlobalError(null);
+    } catch (error) {
+      showGlobalError(errorText(error));
+    }
+    render();
+    sendPreview();
+  }
+
+  /** 用量或授权变化后通知卡片重读缓存（卡片自行判断是否需要查询）。 */
+  function notifyCard() {
+    if (!bridge || !bridge.card || !bridge.card.requestRefresh) return;
+    try {
+      var result = bridge.card.requestRefresh();
+      if (result && typeof result.catch === 'function') result.catch(function () {});
+    } catch (_) { /* 桥暂不可用时忽略，不影响本页状态。 */ }
+  }
+
+  async function saveSecret(id) {
+    var entry = ui[id];
+    if (!client || !entry || !entry.secret) return;
+    var value = entry.secret.value.replace(/^\s+|\s+$/g, '');
+    if (!value) { showRowError(id, '请输入凭据内容'); return; }
+    setBusy(true, '');
+    showRowError(id, null);
+    try {
+      await client.saveSecret(id, value);
+      entry.secret.value = '';
+      showGlobal(providerName(id) + ' 凭据已保存');
+      if (WEBUI_REFRESHABLE[id]) {
+        await client.refresh(id);
+        showGlobal(providerName(id) + ' 已刷新');
+      }
+    } catch (error) {
+      showRowError(id, errorText(error));
+    } finally {
+      notifyCard();
+      await reload();
+      setBusy(false);
+    }
+  }
+
+  async function clearProvider(id) {
+    if (!client) return;
+    if (device && device.id === id) cancelDeviceSession('');
+    setBusy(true, '');
+    showRowError(id, null);
+    try {
+      await client.clear(id);
+      var entry = ui[id];
+      if (entry && entry.secret) entry.secret.value = '';
+      showGlobal(providerName(id) + (id === 'mimo' ? ' 已移除，网页登录会话保留' : ' 已退出登录'));
+      notifyCard();
+      await reload();
+    } catch (error) {
+      showRowError(id, errorText(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function refreshProvider(id) {
+    if (!client || busy) return;
+    setBusy(true, '正在刷新 ' + providerName(id) + '…');
+    showRowError(id, null);
+    try {
+      await client.refresh(id);
+      showGlobal(providerName(id) + ' 已刷新');
+      notifyCard();
+    } catch (error) {
+      showRowError(id, errorText(error));
+      showGlobal('');
+    } finally {
+      await reload();
+      setBusy(false);
+    }
+  }
+
+  /** 逐来源刷新；MiMo 请求由 request 适配器交给原生桥。 */
+  async function refreshAll() {
+    if (!client || busy) return;
+    setBusy(true, '正在刷新…');
+    showGlobalError(null);
+    var ok = 0, failed = 0, skipped = 0;
+    try {
+      for (var i = 0; i < rows.length; i++) {
+        var row = rows[i];
+        if (!row || !WEBUI_REFRESHABLE[row.id]) continue;
+        if (!row.configured) { skipped++; continue; }
+        try {
+          await client.refresh(row.id);
+          rowErrors[row.id] = null;
+          ok++;
+        } catch (error) {
+          rowErrors[row.id] = errorText(error);
+          failed++;
+        }
+      }
+      if (ok) notifyCard();
+      if (ok + failed === 0) showGlobal('没有可刷新的来源（' + skipped + ' 个未配置）');
+      else if (failed) showGlobal('刷新完成：' + ok + ' 成功，' + failed + ' 失败');
+      else showGlobal('已刷新 ' + ok + ' 个来源');
+    } finally {
+      await reload();
+      setBusy(false);
+    }
+  }
+
+  /* ---------- MiMo 网页登录 ---------- */
+
+  async function startMimoLogin() {
+    if (!client || busy) return;
+    setBusy(true, '正在获取小米账号登录入口…');
+    showRowError('mimo', null);
+    try {
+      var url = await client.requestMimoLoginUrl();
+      if (!window.open(url, '_blank')) throw new Error('无法打开登录窗口，请在新版卡片桥中重试');
+      showGlobal('请在新窗口完成登录，关闭窗口后点击“检查登录”');
+    } catch (error) {
+      showRowError('mimo', errorText(error));
+      showGlobal('');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function checkMimoLogin() {
+    if (!client || busy) return;
+    setBusy(true, '正在检查小米账号登录…');
+    showRowError('mimo', null);
+    try {
+      await client.checkMimoLogin();
+      showGlobal('小米 MiMo 登录已确认，用量已更新');
+      notifyCard();
+    } catch (error) {
+      showRowError('mimo', errorText(error));
+      showGlobal('');
+    } finally {
+      await reload();
+      setBusy(false);
+    }
+  }
+
+  /* ---------- Codex 设备码登录 ---------- */
+
+  function setDeviceStatus(id, message) {
+    var entry = ui[id];
+    if (entry && entry.deviceStatus) entry.deviceStatus.textContent = message || '';
+  }
+
+  async function startDeviceLogin(id) {
+    if (!client || busy) return;
+    cancelDeviceSession('');
+    setBusy(true, '');
+    showRowError(id, null);
+    try {
+      var login = await client.requestDeviceCode();
+      if (!login || !login.userCode || !login.verificationUrl) {
+        throw Object.assign(new Error('设备码请求未返回验证码'), { code: 'ERROR' });
+      }
+      beginDeviceSession(id, login);
+    } catch (error) {
+      showRowError(id, errorText(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function beginDeviceSession(id, login) {
+    var entry = ui[id];
+    if (!entry) return;
+    var session = { id: id, login: login, cancelled: false };
+    device = session;
+    if (entry.code) entry.code.value = String(login.userCode);
+    if (entry.verify) {
+      var url = String(login.verificationUrl);
+      if (/^https:\/\//i.test(url)) {
+        entry.verify.href = url;
+        entry.verify.removeAttribute('aria-disabled');
+      } else {
+        entry.verify.href = '#';
+        entry.verify.setAttribute('aria-disabled', 'true');
+      }
+    }
+    if (entry.devicePanel) entry.devicePanel.hidden = false;
+    setDeviceStatus(id, '等待验证中…（验证码 ' + login.userCode + '）');
+    updateEnabled();
+    attemptDeviceLogin(session);
+  }
+
+  function attemptDeviceLogin(session) {
+    if (session.cancelled || device !== session || !client) return;
+    var outcome;
+    try {
+      outcome = client.completeDeviceLogin(session.login, {
+        isCancelled: function () { return session.cancelled; }
+      });
+    } catch (error) {
+      outcome = Promise.reject(error);
+    }
+    Promise.resolve(outcome).then(function () {
+      // 取消后到达的结果一律丢弃：不做保存、不触发卡片刷新。
+      if (session.cancelled || device !== session) return;
+      finishDeviceSession(session);
+      showGlobal(providerName(session.id) + ' 登录成功');
+      notifyCard();
+      reload();
+    }).catch(function (error) {
+      if (session.cancelled || device !== session) return;
+      if (error && error.code === 'CANCELLED') {
+        finishDeviceSession(session);
+        showGlobal('已取消登录');
+        return;
+      }
+      // 核心负责轮询与 15 分钟超时。这里的失败已经是最终结果，不能重用授权码。
+      finishDeviceSession(session);
+      showRowError(session.id, errorText(error));
+      // 令牌可能已保存、仅首次用量请求失败；仍需回读授权与错误状态。
+      notifyCard();
+      reload();
+    });
+  }
+
+  function finishDeviceSession(session) {
+    var entry = ui[session.id];
+    if (entry && entry.devicePanel) entry.devicePanel.hidden = true;
+    if (device === session) device = null;
+    updateEnabled();
+  }
+
+  /** 取消当前设备码会话：进行中的轮询停止，取消后不产生任何保存。 */
+  function cancelDeviceSession(message) {
+    if (!device) return;
+    var session = device;
+    session.cancelled = true;
+    finishDeviceSession(session);
+    if (message) showGlobal(message);
+  }
+
+  function copyCode(id) {
+    var entry = ui[id];
+    if (!entry || !entry.code) return;
+    var input = entry.code;
+    input.focus();
+    input.select();
+    try { input.setSelectionRange(0, input.value.length); } catch (_) { /* 只读字段个别实现不支持。 */ }
+    function fallback() {
+      try {
+        if (document.execCommand && document.execCommand('copy')) showGlobal('验证码已复制');
+        else showGlobal('请长按 / 手动选择验证码复制');
+      } catch (_) {
+        showGlobal('请长按 / 手动选择验证码复制');
+      }
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(input.value).then(function () {
+        showGlobal('验证码已复制');
+      }).catch(fallback);
+    } else {
+      fallback();
+    }
+  }
+
+  /* ---------- 卡片预览联动 ---------- */
+
+  function sendPreview() {
+    if (!previewReady || !client) return;
+    var config;
+    try {
+      config = client.cardConfig();
+    } catch (_) {
+      return;
+    }
+    Promise.resolve(config).then(function (value) {
+      if (!value || !Array.isArray(value.providers)) return;
+      if (!value.emptyMessage) {
+        value = Object.assign({}, value, { emptyMessage: '请在模块设置中添加来源' });
+      }
+      // 预览消息只含展示数据（core 保证不含凭据）。
+      window.CARD_CONFIG = value;
+      try {
+        dom.preview.contentWindow.postMessage({ type: 'ai-usage-preview', config: value }, '*');
+      } catch (_) { /* iframe 尚未就绪时忽略，下次状态变化会重发。 */ }
+    });
+  }
+
+  function wirePreview() {
+    if (!dom.preview) return;
+    dom.preview.addEventListener('load', function () {
+      previewReady = true;
+      sendPreview();
+    });
+    try {
+      if (dom.preview.contentDocument && dom.preview.contentDocument.readyState === 'complete') {
+        previewReady = true;
+      }
+    } catch (_) { /* 跨源不可读时等待 load 事件。 */ }
+    sendPreview();
+  }
+
+  /* ---------- 启动 ---------- */
+
+  function disableAllControls() {
+    var nodes = document.querySelectorAll('button, input');
+    for (var i = 0; i < nodes.length; i++) nodes[i].disabled = true;
+  }
+
+  function init() {
+    dom.providers = byId('providers');
+    dom.refreshAll = byId('refresh-all');
+    dom.globalStatus = byId('global-status');
+    dom.globalError = byId('global-error');
+    dom.bridgeNotice = byId('bridge-notice');
+    dom.resourceError = byId('resource-error');
+    dom.preview = byId('preview');
+
+    wirePreview();
+
+    if (!core) {
+      if (dom.resourceError) dom.resourceError.hidden = false;
+      disableAllControls();
+      return;
+    }
+    renderProviders();
+
+    if (!bridge) {
+      // 普通网页打开：明确提示，禁用全部写入与网络入口，不伪造任何数据。
+      if (dom.bridgeNotice) dom.bridgeNotice.hidden = false;
+      disableAllControls();
+      return;
+    }
+
+    try {
+      client = core.create({
+        storage: bridge.storage,
+        request: request,
+        // 设置页负责续期与保存 refresh token；卡片查询时不轮换令牌。
+        allowTokenRefresh: true
+      });
+    } catch (_) {
+      if (dom.resourceError) {
+        dom.resourceError.textContent = '用量核心初始化失败，设置页不可用。';
+        dom.resourceError.hidden = false;
+      }
+      disableAllControls();
+      return;
+    }
+
+    dom.refreshAll.addEventListener('click', function () { refreshAll(); });
+    // 离开页面才取消：切到外部验证浏览器不算离开（链接由系统浏览器打开，本页保持不变）。
+    window.addEventListener('pagehide', function () { cancelDeviceSession(''); });
+
+    updateEnabled();
+    reload();
+  }
+
+  init();
+})();

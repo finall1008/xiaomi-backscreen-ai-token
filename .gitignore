@@ -1,6 +1,4 @@
-.gradle/
-.kotlin/
 .dsh/
-**/build/
-local.properties
+node_modules/
+dist/
 signing/

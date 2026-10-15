@@ -1,0 +1,11 @@
+{
+  "id": "dev.finall.aitoken",
+  "name": "AI 用量背屏",
+  "version": "0.2.2",
+  "versionCode": 4,
+  "apiVersion": 2,
+  "description": "查看 Codex、Kimi Code、DeepSeek 与小米 MiMo 用量",
+  "author": "finall1008",
+  "capabilities": ["network", "storage"],
+  "background": { "intervalMinutes": 30 }
+}

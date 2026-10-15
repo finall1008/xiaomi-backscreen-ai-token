@@ -5,18 +5,13 @@
 - 本仓库固定使用 `finall1008 <wymxx55@outlook.com>` 作为 Git author 和 committer。
 - 在仓库本地配置 `user.name=finall1008`、`user.email=wymxx55@outlook.com`，不得切换身份或修改全局 Git 配置。
 
-## APK 签名与安装
+## 模块仓库
 
-- Debug 和 Release 始终使用与隔壁舞萌、卡片桥工程一致的所有者 `finall` 签名，不得使用默认 debug key、生成新密钥或切换签名。
-- 构建使用仓库相对路径 [signing/finall.jks](<signing/finall.jks>)，alias 为 `finall`。
-- 密码仅从 macOS 钥匙串读取。service 和 account 在本机 [signing/signing.properties](<signing/signing.properties>) 中配置（字段 `keychainService`、`keychainAccount`）。整个 `signing/` 目录已在 [.gitignore](<.gitignore>) 中忽略，禁止提交密钥、本机签名配置，禁止打印或落盘密码。
-- 本地密钥或钥匙串不可用时停止构建，不做替代。
-- GitHub Actions 的 `CI=true` 构建使用仓库 Secrets 还原同一把 `finall` 密钥到 `signing/finall.jks`，密码仅通过环境变量传入；缺少材料即失败，禁止输出密码或回退其他签名。发布前校验 APK 签名证书 SHA-256 与本地所有者一致。
-- 手机安装必须 `adb install -r` 覆盖保留数据。遇到签名冲突报告错误，不得卸载用户应用绕过。
+- 本仓库是 rear-card-bridge 卡片模块。Git 导入读取根目录 [module.json](<module.json>) 以及 `npm run build` 生成的 `card/`、`webroot/`、`background/`；这三份编译产物必须随功能改动提交。手机不执行 npm。
+- 当前版本为 `0.2.2`，versionCode 为 `4`。同一模块 id 更新安装时必须递增 `versionCode`。
 
 ## 界面与背屏卡片
 
-- Android App 使用 Miuix Compose 0.9.4 标准控件，不自制控件。
 - 背屏卡片直接采用 [原型](<prototype/main.js>) 的既有视觉设计，禁止擅自重新设计。只允许真实数据、运行时适配所必要的功能性修改。
 - OpenAI logo 是静态资源，随载体 ZIP 的 assets/ 目录安装，不以内联图片方式参与日常脚本热更新。
-- OAuth 凭据只在本机私有加密存储中保存，禁用备份；不得写入日志、卡片、导出 ZIP 或仓库。
+- 模块令牌 / API Key 保存在卡片桥本机私有 `bridge.storage` 中，暂不要求加密；MiMo 网页登录 Cookie 由宿主保存在模块独立 WebView Profile，业务存储仅保存会话类型标记。凭据不得写入日志、Canvas 展示数据、常显快照、预览消息、导出 ZIP 或仓库。

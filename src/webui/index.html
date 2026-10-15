@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <title>AI 用量背屏 · 模块设置</title>
+  <!-- 第一个脚本必须是宿主注入的桥接；core.js 由构建复制；main.js 在两者之后执行。 -->
+  <script src="bridge-shim.js"></script>
+  <script src="core.js" defer></script>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="bridge-notice" class="banner banner-warn" role="alert" hidden>请在卡片桥内打开模块设置</div>
+  <div id="resource-error" class="banner banner-error" role="alert" hidden>模块资源不完整，无法加载用量核心（core.js）。</div>
+
+  <main class="page">
+    <header class="page-head">
+      <h1>AI 用量背屏</h1>
+      <p class="page-sub">配置 Codex、Kimi Code、DeepSeek 与小米 MiMo，用量写入本机缓存供背屏卡片显示。</p>
+    </header>
+
+    <section class="card">
+      <div class="card-head"><h2>卡片预览</h2></div>
+      <div class="preview-wrap">
+        <iframe id="preview" src="preview.html" title="背屏卡片预览"></iframe>
+      </div>
+      <p class="muted">预览与背屏使用同一套渲染脚本；刷新用量后自动同步。</p>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>用量来源</h2>
+        <button id="refresh-all" type="button" class="btn btn-primary">全部刷新</button>
+      </div>
+      <div id="providers" class="providers"></div>
+      <p id="global-status" class="status" role="status"></p>
+      <div id="global-error" class="banner banner-error" role="alert" hidden></div>
+    </section>
+  </main>
+
+  <script src="main.js" defer></script>
+</body>
+</html>

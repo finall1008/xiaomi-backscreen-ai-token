@@ -36,7 +36,7 @@ if (/[?&]bare=1/.test(location.search)) {
     document.body.style.background = '#000';
   });
 }
-// 示例配置：真实 App 由 CardPackageBuilder 把各来源快照内联到这里（只含已设置的来源）。
+// 原型示例配置；实际模块由共享核心生成仅含已配置来源的展示数据。
 // ?providers=codex,kimi 筛选演示来源；?providers=codex 演示单来源（无首页，直接详情）。
 // 套餐档位变体：?codex=pro（Pro 无 5 小时窗口）、?kimi=new（新套餐无每周窗口）
 (function () {
