@@ -6,13 +6,13 @@
 
 1. 安装支持模块网页登录会话、统一 JobScheduler 后台调度与刷新周期设置的 rear-card-bridge。系统 Android System WebView 需支持 `MULTI_PROFILE`。已有载体需要重新生成，并到系统背屏设置重新应用。
 2. 在卡片桥中导入 Git 仓库 <https://github.com/finall1008/xiaomi-backscreen-ai-token>，分支 `main`。导入器读取仓库根目录的 [module.json](<module.json>)、编译后的经典卡片 `card/`、静态 `webroot/` 与 `background/`。手机上不执行 npm，也不运行构建。
-3. 也可改用「安装 ZIP 模块」，安装 [Release ZIP](<https://github.com/finall1008/xiaomi-backscreen-ai-token/releases/download/v0.2.2/ai-usage-0.2.2.zip>)。ZIP 根目录同样是 `module.json` 与上述三份静态产物。
+3. 也可改用「安装 ZIP 模块」，安装 [Release ZIP](<https://github.com/finall1008/xiaomi-backscreen-ai-token/releases/download/v0.2.3/ai-usage-0.2.3.zip>)。ZIP 根目录同样是 `module.json` 与上述三份静态产物。
 4. 打开模块设置：Codex 使用设备码登录；Kimi Code / DeepSeek 填写 API Key；MiMo 点「网页登录」，登录完成关闭窗口，再点「检查登录」。Codex 需要在 ChatGPT 设置 → 安全中允许设备码登录。
 5. 在桥中绑定载体，并在系统背屏设置应用卡片。后续数据和脚本更新无需反复导出 ZIP；静态 logo 等资源变化仍需更新载体并重新应用。
 6. 设置页可查看各来源详情、手动刷新、清除授权，并预览卡片。背屏支持点击来源进入详情、左右滑动切页、点击详情标题返回首页；首页下拉刷新全部已配置来源，详情页在顶部下拉只刷新当前来源。
 7. 需要休眠期间取数时，在桥中开启后台刷新并统一设置该模块周期（默认 30 分钟，最短 5 分钟）。宿主通过系统 JobScheduler 调度，更新共享快照供背屏下次加载时读取，不主动唤醒背屏。
 
-同一模块 id 更新时必须增加 [模块描述](<module.json>) 的 `versionCode`。当前 `version` 为 `0.2.2`，`versionCode` 为 `4`。桥保留模块 storage 和 config。
+同一模块 id 更新时必须增加 [模块描述](<module.json>) 的 `versionCode`。当前 `version` 为 `0.2.3`，`versionCode` 为 `5`。桥保留模块 storage 和 config。
 
 ## 功能
 

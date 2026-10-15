@@ -4,7 +4,7 @@
 
 ## 当前模块布局
 
-模块 id 为 `dev.finall.aitoken`，`version` 为 `0.2.2`，`versionCode` 为 `4`，声明 `network` / `storage`。Git 导入读取仓库根目录，手机不执行 npm：
+模块 id 为 `dev.finall.aitoken`，`version` 为 `0.2.3`，`versionCode` 为 `5`，声明 `network` / `storage`。Git 导入读取仓库根目录，手机不执行 npm：
 
 - [module.json](<../module.json>)
 - `card/`：编译后的经典卡片 JS（async/await 已转为生成器）与静态 assets
