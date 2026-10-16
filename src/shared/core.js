@@ -11,12 +11,13 @@
  *   - allowTokenRefresh 默认 true；背屏传 false，Codex 401 时提示去设置页刷新，不轮换令牌。
  *
  * 存储键：auth.<id>（凭据）、usage.<id>（归一化快照）、status.<id>（错误状态）。
- * MiMo 网页登录只存 {"type":"webview"} 标记；Cookie 留在宿主 Profile，不进入业务存储。旧的非空 Cookie 字符串仍可读。
+ * MiMo / Cursor 网页登录只存 {"type":"webview"} 标记；Cookie 留在宿主 Profile，不进入业务存储。MiMo 旧的非空 Cookie 字符串仍可读。
  * status 形态固定为 {code, message, updatedAt}（updatedAt 为 Unix 秒）或 null；
  * code 取值 AUTH_REQUIRED / CANCELLED / ERROR，任何情况下不写入服务端响应原文或凭据。
  *
  * 用量快照的归一化字段：
- * id、plan、updatedAt、windows、balance、credits、booster、hint；字段缺失时为 null，不伪造 0。
+ * id、plan、updatedAt、windows、balance、credits、booster、hint；Cursor 另有安全展示明细 details。字段缺失时不伪造 0。
+ * display.providers 保存用户勾选的来源 ID；未保存偏好时展示前四个已配置来源，保存后允许全部取消。
  */
 (function () {
   'use strict';
@@ -25,7 +26,8 @@
     { id: 'codex', name: 'Codex', logoAsset: 'assets/openai.png' },
     { id: 'kimi', name: 'Kimi Code', logoAsset: 'assets/kimi.png' },
     { id: 'deepseek', name: 'DeepSeek', logoAsset: 'assets/deepseek.png' },
-    { id: 'mimo', name: '小米 MiMo', logoAsset: 'assets/mimo.png' }
+    { id: 'mimo', name: '小米 MiMo', logoAsset: 'assets/mimo.png' },
+    { id: 'cursor', name: 'Cursor', logoAsset: 'assets/cursor.png' }
   ];
   var SECRET_PROVIDER = { kimi: true, deepseek: true, mimo: true };
   var ERROR_CODE = { AUTH_REQUIRED: true, CANCELLED: true, ERROR: true };
@@ -48,6 +50,9 @@
   var DEEPSEEK_BALANCE_URL = 'https://api.deepseek.com/user/balance';
   var MIMO_USAGE_URL = 'https://platform.xiaomimimo.com/api/v1/tokenPlan/usage';
   var MIMO_DETAIL_URL = 'https://platform.xiaomimimo.com/api/v1/tokenPlan/detail';
+  var CURSOR_USAGE_URL = 'https://cursor.com/api/usage-summary';
+  var DISPLAY_PROVIDERS_KEY = 'display.providers';
+  var MAX_DISPLAY_PROVIDERS = 4;
 
   var REQUEST_TIMEOUT_MS = 30000;
   var FIVE_HOUR_SECONDS = 5 * 3600;
@@ -874,6 +879,83 @@
     return { plan: plan, periodEnd: periodEnd, cycle: cycle };
   }
 
+  // ---------- Cursor 官网用量（网页会话；不使用团队管理员密钥） ----------
+
+  function parseCursorUsage(body, updatedAt) {
+    var data = readJson(body, 'Cursor 用量响应格式错误');
+    if (!isObject(data.individualUsage) && !isObject(data.teamUsage) && data.isUnlimited !== true) {
+      throw coreError('ERROR', 'Cursor 用量响应缺少额度信息');
+    }
+    var individual = isObject(data.individualUsage) ? data.individualUsage : {};
+    var team = isObject(data.teamUsage) ? data.teamUsage : {};
+    var overall = isObject(individual.overall) && individual.overall.enabled !== false ? individual.overall : null;
+    var plan = isObject(individual.plan) && individual.plan.enabled !== false ? individual.plan : null;
+    // 团队席位的个人总预算与套餐内额度不是同一概念，优先展示明确的个人预算。
+    var personal = overall || plan;
+    var start = parseFlexibleEpoch(data.billingCycleStart);
+    var end = parseFlexibleEpoch(data.billingCycleEnd);
+    var seconds = start !== null && end !== null && end > start ? end - start : MONTH_SECONDS;
+    var windows = [];
+    var details = [];
+
+    function money(value) { return '$' + (value / 100).toFixed(2); }
+    function nonnegative(obj, key) {
+      var value = finiteDouble(obj, key);
+      return value !== null && value >= 0 ? value : null;
+    }
+    function addWindow(title, percent) {
+      if (percent === null) return;
+      windows.push({ title: title, usedPercent: Math.max(0, Math.min(100, percent)), windowSeconds: seconds, resetAt: end });
+    }
+    var used = nonnegative(personal, 'used');
+    var limit = nonnegative(personal, 'limit');
+    var percent = personal === plan && plan !== null ? nonnegative(plan, 'totalPercentUsed') : null;
+    if (percent === null && used !== null && limit !== null && limit > 0) percent = used / limit * 100;
+    addWindow(overall ? '个人本期额度' : '套餐本期额度', percent);
+    if (used !== null) {
+      details.push((overall ? '个人本期已用 ' : '套餐已用 ') + money(used) +
+        (limit !== null && limit > 0 ? ' / ' + money(limit) : ' · 上限未提供'));
+    }
+    if (overall === null && plan !== null) {
+      addWindow('Auto / Cursor 模型', nonnegative(plan, 'autoPercentUsed'));
+      addWindow('第三方模型', nonnegative(plan, 'apiPercentUsed'));
+    }
+    var pooled = isObject(team.pooled) && team.pooled.enabled !== false ? team.pooled : null;
+    var pooledUsed = nonnegative(pooled, 'used');
+    var pooledLimit = nonnegative(pooled, 'limit');
+    // 共享池不能冒充个人剩余额度；仅在个人比例缺失时提供明确标注的团队窗口。
+    if (!windows.length && pooledUsed !== null && pooledLimit !== null && pooledLimit > 0) {
+      addWindow('团队共享额度', pooledUsed / pooledLimit * 100);
+    }
+    var extra = isObject(individual.onDemand) && individual.onDemand.enabled !== false ? individual.onDemand : null;
+    var extraUsed = nonnegative(extra, 'used');
+    var extraLimit = nonnegative(extra, 'limit');
+    if (extraUsed !== null) {
+      details.push('个人额外消费 ' + money(extraUsed) + (extraLimit !== null && extraLimit > 0 ? ' / ' + money(extraLimit) : ''));
+    }
+    if (!details.length && !windows.length) details.push(data.isUnlimited === true ? '当前套餐无固定额度上限' : '接口未提供个人额度上限');
+    return {
+      id: 'cursor', plan: trimmedString(data.membershipType), updatedAt: updatedAt,
+      windows: windows, balance: null, credits: null, booster: null, hint: null, details: details
+    };
+  }
+
+  function hasWebviewSession(raw) {
+    var value = typeof raw === 'string' ? parseJson(raw) : raw;
+    return isObject(value) && value.type === 'webview';
+  }
+
+  async function fetchCursorUsage(context) {
+    var response = await http({
+      request: context.request, url: CURSOR_USAGE_URL, headers: { Accept: 'application/json' }, cookies: true
+    });
+    if (response.status === 401 || response.status === 403) {
+      throw coreError('AUTH_REQUIRED', 'Cursor 登录已失效或无权查看，请在设置页重新登录并检查');
+    }
+    if (!isSuccess(response.status)) throw coreError('ERROR', 'Cursor 读取失败（' + response.status + '）');
+    return parseCursorUsage(response.body, context.nowSeconds());
+  }
+
   // ---------- 归一化快照缓存 ----------
 
   function normalizeWindows(raw) {
@@ -933,7 +1015,7 @@
     if (wireId === null || wireId !== id) return null;
     var updatedAt = nullableLong(raw, 'updatedAt');
     if (updatedAt === null) return null;
-    return {
+    var snapshot = {
       id: id,
       plan: cacheString(raw.plan),
       updatedAt: updatedAt,
@@ -943,6 +1025,8 @@
       booster: normalizeBooster(raw.booster),
       hint: cacheString(raw.hint)
     };
+    if (Array.isArray(raw.details)) snapshot.details = raw.details.filter(function (line) { return typeof line === 'string'; });
+    return snapshot;
   }
 
   function parseCachedProviderSnapshot(text) {
@@ -1390,7 +1474,7 @@
     var allowTokenRefresh = options.allowTokenRefresh !== false;
 
     // 每个来源的代数：clear / saveSecret 递增，用于丢弃在途写入。
-    var generations = { codex: 0, kimi: 0, deepseek: 0, mimo: 0 };
+    var generations = { codex: 0, kimi: 0, deepseek: 0, mimo: 0, cursor: 0 };
 
     var context = {
       storage: storage,
@@ -1439,6 +1523,7 @@
     async function isConfigured(id) {
       if (id === 'codex') return normalizeCodexAuth(await storage.get(authKey(id))) !== null;
       if (id === 'mimo') return parseMimoAuth(await storage.get(authKey(id))) !== null;
+      if (id === 'cursor') return hasWebviewSession(await storage.get(authKey(id)));
       return (await readSecret(id)) !== null;
     }
 
@@ -1467,6 +1552,7 @@
 
     async function fetchProvider(id, generation) {
       if (id === 'codex') return fetchCodex(context, generation);
+      if (id === 'cursor') return fetchCursorUsage(context);
       if (id === 'mimo') {
         var auth = parseMimoAuth(await storage.get(authKey('mimo')));
         if (auth === null) throw coreError('AUTH_REQUIRED', '尚未设置');
@@ -1497,7 +1583,33 @@
       }
     }
 
+    async function visibleProviderIds() {
+      var raw = await storage.get(DISPLAY_PROVIDERS_KEY);
+      var saved = typeof raw === 'string' ? parseJson(raw) : raw;
+      var ids = [];
+      for (var i = 0; i < PROVIDERS.length; i++) {
+        var id = PROVIDERS[i].id;
+        if (Array.isArray(saved) && saved.indexOf(id) === -1) continue;
+        if (await isConfigured(id)) ids.push(id);
+      }
+      // 无偏好时兼容已有四个来源；新安装只配置 Cursor 时也会默认展示它。
+      return ids.slice(0, MAX_DISPLAY_PROVIDERS);
+    }
+
+    async function setProviderVisible(id, visible) {
+      if (!findProvider(id)) throw coreError('ERROR', '不支持的来源');
+      if (!await isConfigured(id)) throw coreError('ERROR', '请先配置该来源');
+      var ids = await visibleProviderIds();
+      var index = ids.indexOf(id);
+      if (visible && index === -1) {
+        if (ids.length >= MAX_DISPLAY_PROVIDERS) throw coreError('ERROR', '背屏最多展示 4 个来源，请先取消一个');
+        ids.push(id);
+      } else if (!visible && index !== -1) ids.splice(index, 1);
+      await storage.set(DISPLAY_PROVIDERS_KEY, JSON.stringify(ids));
+    }
+
     async function state() {
+      var visible = await visibleProviderIds();
       var rows = [];
       for (var i = 0; i < PROVIDERS.length; i++) {
         var provider = PROVIDERS[i];
@@ -1506,6 +1618,7 @@
           name: provider.name,
           logoAsset: provider.logoAsset,
           configured: await isConfigured(provider.id),
+          visible: visible.indexOf(provider.id) !== -1,
           snapshot: await readSnapshot(provider.id),
           status: await readStatus(provider.id)
         });
@@ -1513,13 +1626,14 @@
       return rows;
     }
 
-    /** 卡片展示数据：只包含已配置来源，缺省字段不输出。 */
+    /** 卡片展示数据：仅勾选且已配置的最多四个来源，缺省字段不输出。 */
     async function cardConfig() {
       var entries = [];
       var newest = null;
+      var visible = await visibleProviderIds();
       for (var i = 0; i < PROVIDERS.length; i++) {
         var provider = PROVIDERS[i];
-        if (!await isConfigured(provider.id)) continue;
+        if (visible.indexOf(provider.id) === -1) continue;
         var snapshot = await readSnapshot(provider.id);
         var entry = { id: provider.id, name: provider.name };
         if (snapshot !== null && snapshot.plan !== null) entry.plan = snapshot.plan;
@@ -1548,6 +1662,7 @@
             entry.booster = booster;
           }
           if (snapshot.hint !== null) entry.hint = snapshot.hint;
+          if (snapshot.details) entry.details = snapshot.details;
           entry.updatedAt = snapshot.updatedAt;
           if (newest === null || snapshot.updatedAt > newest) newest = snapshot.updatedAt;
         }
@@ -1603,6 +1718,22 @@
 
     async function requestMimoLoginUrl() {
       return loadMimoLoginUrl(context);
+    }
+
+    async function checkCursorLogin() {
+      var generation = generations.cursor;
+      var configured = await isConfigured('cursor');
+      try {
+        var snapshot = await fetchCursorUsage(context);
+        await guardedSet('cursor', generation, authKey('cursor'), JSON.stringify({ type: 'webview' }));
+        await persistSnapshot('cursor', snapshot, generation);
+        return snapshot;
+      } catch (error) {
+        var failure = toCoreError(error);
+        if (generations.cursor !== generation) throw cancelledError();
+        if (configured) await writeStatus('cursor', failure, generation);
+        throw failure;
+      }
     }
 
     /** 逐来源刷新；单来源失败只写状态，最后返回完整 state 数组。 */
@@ -1667,6 +1798,8 @@
     return {
       state: state,
       cardConfig: cardConfig,
+      setProviderVisible: setProviderVisible,
+      checkCursorLogin: checkCursorLogin,
       saveSecret: saveSecret,
       clear: clear,
       refresh: refresh,
@@ -1697,6 +1830,7 @@
       parseDeepSeekBalance: parseDeepSeekBalance,
       parseMimoUsage: parseMimoUsage,
       parseMimoDetail: parseMimoDetail,
+      parseCursorUsage: parseCursorUsage,
       parseFlexibleEpoch: parseFlexibleEpoch
     }
   };

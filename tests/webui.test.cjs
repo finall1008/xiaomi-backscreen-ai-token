@@ -54,8 +54,13 @@ test('main.js 覆盖桥缺失、预览消息、设备码与刷新联动', () => 
   // MiMo 也可刷新，但携带会话的请求交给原生桥而非 fetch。
   const block = source.match(/WEBUI_REFRESHABLE = \{[^}]+\}/);
   assert.ok(block && block[0].includes('mimo'), '刷新来源包含 mimo');
+  assert.ok(block && block[0].includes('cursor'), '刷新来源包含 cursor');
   assert.ok(source.includes('requestMimoLoginUrl'));
   assert.ok(source.includes('checkMimoLogin'));
+  assert.ok(source.includes('checkCursorLogin'));
+  assert.ok(source.includes('setProviderVisible'));
+  assert.ok(source.includes('https://cursor.com/dashboard/usage'));
+  assert.ok(!source.includes('requestCursorLoginUrl'), 'Cursor 无签名登录入口');
   assert.ok(!source.includes('保存 Cookie'), '设置页不再要求手动复制 Cookie');
   // 取消路径只处理 CANCELLED 并结束会话，其后不追加任何保存调用。
   const cancelled = source.match(/code === 'CANCELLED'[\s\S]{0,320}/);
@@ -67,7 +72,7 @@ test('main.js 覆盖桥缺失、预览消息、设备码与刷新联动', () => 
 
 function makeElement(id) {
   return {
-    id, hidden: false, textContent: '', innerHTML: '', value: '', disabled: false,
+    id, hidden: false, textContent: '', innerHTML: '', value: '', checked: false, disabled: false,
     className: '', href: '', style: {}, parentNode: null, listeners: {},
     addEventListener(type, fn) { (this.listeners[type] = this.listeners[type] || []).push(fn); },
     querySelectorAll() { return []; },
@@ -250,4 +255,109 @@ test('保存密钥立即查询；MiMo 开窗后检查；设备码终态失败不
   assert.ok(stateReads > readsBeforeLogin, '首次用量失败也回读已保存的授权状态');
   assert.equal(env.elements['device-codex'].hidden, true);
   assert.match(env.elements['error-codex'].textContent, /登录已失效/);
+});
+
+test('Cursor 开窗检查；背屏勾选自动保存，满 4 个时未选项禁用且已选可取消', async () => {
+  const calls = [];
+  const ids = ['codex', 'kimi', 'deepseek', 'mimo', 'cursor', 'extra'];
+  let rows = ids.map((id, index) => ({
+    id,
+    configured: id !== 'extra',
+    visible: index < 4,
+    snapshot: id === 'cursor' ? {
+      plan: 'pro',
+      details: ['个人消费 $1.00', '额外消费 $0.20', '接口未提供个人额度上限']
+    } : null
+  }));
+  const bridge = {
+    storage: {},
+    card: { requestRefresh() { calls.push('notify'); } }
+  };
+  const core = {
+    providers: ids.map(id => ({
+      id,
+      name: id,
+      logoAsset: id === 'cursor' ? 'assets/cursor.png' : ''
+    })),
+    create: () => ({
+      state: async () => rows,
+      cardConfig: () => ({ providers: rows.filter(row => row.visible).map(row => ({ id: row.id })) }),
+      setProviderVisible: async (id, visible) => {
+        calls.push('visible:' + id + ':' + visible);
+        const current = rows.find(row => row.id === id);
+        const selected = rows.filter(row => row.visible).length;
+        if (visible && current && !current.visible && selected >= 4) {
+          throw new Error('背屏最多展示 4 个来源，请先取消一个');
+        }
+        rows = rows.map(row => row.id === id ? { ...row, visible } : row);
+      },
+      checkCursorLogin: async () => { calls.push('cursor-check'); },
+      clear: async id => { calls.push('clear:' + id); },
+      refresh: async () => {},
+      saveSecret: async () => {},
+      requestMimoLoginUrl: async () => 'https://account.xiaomi.com/pass/serviceLogin',
+      checkMimoLogin: async () => {},
+      requestDeviceCode: async () => ({}),
+      completeDeviceLogin: async () => ({})
+    })
+  };
+  const env = makeEnvironment({ bridge, core });
+  await tick();
+
+  assert.match(env.elements['metrics-cursor'].innerHTML, /套餐 pro/);
+  assert.match(env.elements['metrics-cursor'].innerHTML, /个人消费 \$1\.00/);
+  assert.match(env.elements['metrics-cursor'].innerHTML, /额外消费 \$0\.20/);
+  assert.match(env.elements['metrics-cursor'].innerHTML, /接口未提供个人额度上限/);
+  assert.equal(env.elements['refresh-cursor'].disabled, false, '隐藏背屏仍可刷新已配置来源');
+  assert.equal(env.elements['visible-cursor'].checked, false);
+  assert.equal(env.elements['visible-cursor'].disabled, true, '已满 4 个时未选项禁用');
+  assert.equal(env.elements['visible-codex'].checked, true);
+  assert.equal(env.elements['visible-codex'].disabled, false, '已选项仍可取消');
+  assert.equal(env.elements['visible-extra'].disabled, true, '未配置来源不可勾选');
+
+  env.elements['visible-cursor'].checked = true;
+  env.elements['visible-cursor'].listeners.change[0]();
+  await tick();
+  assert.deepEqual(calls, ['visible:cursor:true']);
+  assert.match(env.elements['error-cursor'].textContent, /最多展示 4 个/);
+  assert.equal(env.elements['visible-cursor'].checked, false, '超限保存失败后恢复未选');
+
+  calls.length = 0;
+  env.elements['visible-codex'].checked = false;
+  env.elements['visible-codex'].listeners.change[0]();
+  await tick();
+  assert.deepEqual(calls, ['visible:codex:false', 'notify']);
+  assert.equal(env.elements['visible-cursor'].disabled, false, '取消后空出名额');
+  assert.equal(env.elements['visible-extra'].disabled, true);
+
+  calls.length = 0;
+  env.elements['visible-cursor'].checked = true;
+  env.elements['visible-cursor'].listeners.change[0]();
+  await tick();
+  assert.deepEqual(calls, ['visible:cursor:true', 'notify']);
+  assert.equal(env.elements['visible-cursor'].checked, true);
+  assert.equal(env.elements['visible-cursor'].disabled, false, '已选中的来源可以再取消');
+  assert.equal(env.elements['visible-codex'].disabled, true);
+
+  calls.length = 0;
+  env.state.openImpl = (url, target) => {
+    assert.equal(url, 'https://cursor.com/dashboard/usage');
+    assert.equal(target, '_blank');
+    calls.push('open');
+    return {};
+  };
+  env.elements['login-cursor'].listeners.click[0]();
+  await tick();
+  assert.deepEqual(calls, ['open'], 'Cursor 直接打开用量页，不请求签名入口');
+
+  calls.length = 0;
+  env.elements['check-cursor'].listeners.click[0]();
+  await tick();
+  assert.deepEqual(calls, ['cursor-check', 'notify']);
+
+  calls.length = 0;
+  env.elements['clear-cursor'].listeners.click[0]();
+  await tick();
+  assert.deepEqual(calls, ['clear:cursor', 'notify']);
+  assert.match(env.elements['global-status'].textContent, /网页登录会话保留/);
 });

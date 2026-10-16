@@ -79,7 +79,7 @@ test('ZIP contains an API v2 module, static logos and compiled classic card scri
   assert.ok(!text('background/main.js').includes('getContext('), 'background does not draw Canvas');
   const scripts = [...text('webroot/index.html').matchAll(/<script src="([^"]+)"/g)].map(match => match[1]);
   assert.deepEqual(scripts, ['bridge-shim.js', 'core.js', 'main.js']);
-  for (const id of ['openai', 'kimi', 'deepseek', 'mimo']) {
+  for (const id of ['openai', 'kimi', 'deepseek', 'mimo', 'cursor']) {
     assert.deepEqual(Buffer.from(entries[`card/assets/${id}.png`]), fs.readFileSync(`prototype/assets/${id}.png`));
   }
   assert.ok(text('webroot/core.js').includes('async '), 'browser source stays native async');
@@ -154,6 +154,54 @@ test('compiled card refreshes MiMo through the shared WebView profile without ex
   assert.equal(config.providers[0].id, 'mimo');
   assert.equal(config.providers[0].windows[0].usedPercent, 25);
   assert.ok(!JSON.stringify(config).includes('webview'), 'session marker stays out of AOD display data');
+});
+
+test('compiled card queries Cursor through the profile and displays its personal spending', async () => {
+  const runtime = card(snapshot(42), { respond: options => {
+    assert.equal(options.url, 'https://cursor.com/api/usage-summary');
+    assert.equal(options.cookies, true);
+    assert.equal(options.headers.Cookie, undefined);
+    return { status: 200, body: JSON.stringify({ membershipType: 'enterprise',
+      individualUsage: { overall: { used: 2500, limit: 10000 } } }) };
+  } });
+  delete runtime.data['auth.deepseek'];
+  delete runtime.data['usage.deepseek'];
+  runtime.data['auth.cursor'] = JSON.stringify({ type: 'webview' });
+  runtime.release(); await tick(); runtime.flush();
+  runtime.pull(); await tick(); runtime.flush();
+  assert.equal(runtime.requests(), 1);
+  assert.ok(runtime.texts.includes('个人本期额度'));
+  assert.ok(runtime.texts.includes('个人本期已用 $25.00 / $100.00'));
+  const config = runtime.saved.at(-1).config;
+  assert.equal(config.providers[0].id, 'cursor');
+  assert.equal(config.providers[0].windows[0].usedPercent, 25);
+  assert.ok(!JSON.stringify(config).includes('webview'));
+});
+
+test('background reuses Cursor login and applies the same saved display selection', async () => {
+  const data = { 'auth.cursor': JSON.stringify({ type: 'webview' }), 'auth.deepseek': 'test-key',
+    'display.providers': JSON.stringify(['cursor']) };
+  let saved;
+  const calls = [];
+  const context = vm.createContext({ bridge: {
+    storage: { get: async key => data[key] ?? null, set: async (key, value) => { data[key] = value; }, remove: async key => { delete data[key]; } },
+    net: { request: async options => {
+      calls.push(options);
+      if (options.url.includes('cursor.com')) {
+        assert.equal(options.cookies, true);
+        return { status: 200, body: JSON.stringify({ membershipType: 'team', individualUsage: { overall: { used: 400, limit: 2000 } } }) };
+      }
+      return { status: 200, body: JSON.stringify({ is_available: true, balance_infos: [{ currency: 'CNY', total_balance: '43' }] }) };
+    } },
+    card: { saveSnapshot: async value => { saved = value; } }
+  } });
+  context.window = context;
+  vm.runInContext(text('background/main.js'), context);
+  await context.refresh();
+  assert.equal(calls.length, 2, '隐藏来源不移除配置，仍正常刷新');
+  assert.deepEqual(JSON.parse(JSON.stringify(saved.config.providers.map(p => p.id))), ['cursor']);
+  assert.equal(saved.config.providers[0].windows[0].usedPercent, 20);
+  assert.ok(!JSON.stringify(saved).includes('webview'));
 });
 
 test('background saves successful usage and cached failures, awaits the shared snapshot, and feeds the card first frame', async () => {

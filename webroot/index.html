@@ -17,7 +17,7 @@
   <main class="page">
     <header class="page-head">
       <h1>AI 用量背屏</h1>
-      <p class="page-sub">配置 Codex、Kimi Code、DeepSeek 与小米 MiMo，用量写入本机缓存供背屏卡片显示。</p>
+      <p class="page-sub">配置 Codex、Kimi Code、DeepSeek、小米 MiMo 与 Cursor。勾选最多 4 个来源显示在背屏，用量写入本机缓存。</p>
     </header>
 
     <section class="card">
@@ -33,6 +33,7 @@
         <h2>用量来源</h2>
         <button id="refresh-all" type="button" class="btn btn-primary">全部刷新</button>
       </div>
+      <p class="muted sources-note">背屏最多同时显示 4 个已配置来源，不做分页。勾选“在背屏显示”后自动保存；取消勾选只隐藏背屏和预览，不清除登录或凭据。</p>
       <div id="providers" class="providers"></div>
       <p id="global-status" class="status" role="status"></p>
       <div id="global-error" class="banner banner-error" role="alert" hidden></div>

@@ -13,12 +13,13 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
  *   - allowTokenRefresh 默认 true；背屏传 false，Codex 401 时提示去设置页刷新，不轮换令牌。
  *
  * 存储键：auth.<id>（凭据）、usage.<id>（归一化快照）、status.<id>（错误状态）。
- * MiMo 网页登录只存 {"type":"webview"} 标记；Cookie 留在宿主 Profile，不进入业务存储。旧的非空 Cookie 字符串仍可读。
+ * MiMo / Cursor 网页登录只存 {"type":"webview"} 标记；Cookie 留在宿主 Profile，不进入业务存储。MiMo 旧的非空 Cookie 字符串仍可读。
  * status 形态固定为 {code, message, updatedAt}（updatedAt 为 Unix 秒）或 null；
  * code 取值 AUTH_REQUIRED / CANCELLED / ERROR，任何情况下不写入服务端响应原文或凭据。
  *
  * 用量快照的归一化字段：
- * id、plan、updatedAt、windows、balance、credits、booster、hint；字段缺失时为 null，不伪造 0。
+ * id、plan、updatedAt、windows、balance、credits、booster、hint；Cursor 另有安全展示明细 details。字段缺失时不伪造 0。
+ * display.providers 保存用户勾选的来源 ID；未保存偏好时展示前四个已配置来源，保存后允许全部取消。
  */
 (function () {
   'use strict';
@@ -39,6 +40,10 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
     id: 'mimo',
     name: '小米 MiMo',
     logoAsset: 'assets/mimo.png'
+  }, {
+    id: 'cursor',
+    name: 'Cursor',
+    logoAsset: 'assets/cursor.png'
   }];
   var SECRET_PROVIDER = {
     kimi: true,
@@ -68,6 +73,9 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
   var DEEPSEEK_BALANCE_URL = 'https://api.deepseek.com/user/balance';
   var MIMO_USAGE_URL = 'https://platform.xiaomimimo.com/api/v1/tokenPlan/usage';
   var MIMO_DETAIL_URL = 'https://platform.xiaomimimo.com/api/v1/tokenPlan/detail';
+  var CURSOR_USAGE_URL = 'https://cursor.com/api/usage-summary';
+  var DISPLAY_PROVIDERS_KEY = 'display.providers';
+  var MAX_DISPLAY_PROVIDERS = 4;
   var REQUEST_TIMEOUT_MS = 30000;
   var FIVE_HOUR_SECONDS = 5 * 3600;
   var WEEK_SECONDS = 7 * 24 * 3600;
@@ -919,8 +927,103 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
     };
   }
 
-  // ---------- 归一化快照缓存 ----------
+  // ---------- Cursor 官网用量（网页会话；不使用团队管理员密钥） ----------
 
+  function parseCursorUsage(body, updatedAt) {
+    var data = readJson(body, 'Cursor 用量响应格式错误');
+    if (!isObject(data.individualUsage) && !isObject(data.teamUsage) && data.isUnlimited !== true) {
+      throw coreError('ERROR', 'Cursor 用量响应缺少额度信息');
+    }
+    var individual = isObject(data.individualUsage) ? data.individualUsage : {};
+    var team = isObject(data.teamUsage) ? data.teamUsage : {};
+    var overall = isObject(individual.overall) && individual.overall.enabled !== false ? individual.overall : null;
+    var plan = isObject(individual.plan) && individual.plan.enabled !== false ? individual.plan : null;
+    // 团队席位的个人总预算与套餐内额度不是同一概念，优先展示明确的个人预算。
+    var personal = overall || plan;
+    var start = parseFlexibleEpoch(data.billingCycleStart);
+    var end = parseFlexibleEpoch(data.billingCycleEnd);
+    var seconds = start !== null && end !== null && end > start ? end - start : MONTH_SECONDS;
+    var windows = [];
+    var details = [];
+    function money(value) {
+      return '$' + (value / 100).toFixed(2);
+    }
+    function nonnegative(obj, key) {
+      var value = finiteDouble(obj, key);
+      return value !== null && value >= 0 ? value : null;
+    }
+    function addWindow(title, percent) {
+      if (percent === null) return;
+      windows.push({
+        title: title,
+        usedPercent: Math.max(0, Math.min(100, percent)),
+        windowSeconds: seconds,
+        resetAt: end
+      });
+    }
+    var used = nonnegative(personal, 'used');
+    var limit = nonnegative(personal, 'limit');
+    var percent = personal === plan && plan !== null ? nonnegative(plan, 'totalPercentUsed') : null;
+    if (percent === null && used !== null && limit !== null && limit > 0) percent = used / limit * 100;
+    addWindow(overall ? '个人本期额度' : '套餐本期额度', percent);
+    if (used !== null) {
+      details.push((overall ? '个人本期已用 ' : '套餐已用 ') + money(used) + (limit !== null && limit > 0 ? ' / ' + money(limit) : ' · 上限未提供'));
+    }
+    if (overall === null && plan !== null) {
+      addWindow('Auto / Cursor 模型', nonnegative(plan, 'autoPercentUsed'));
+      addWindow('第三方模型', nonnegative(plan, 'apiPercentUsed'));
+    }
+    var pooled = isObject(team.pooled) && team.pooled.enabled !== false ? team.pooled : null;
+    var pooledUsed = nonnegative(pooled, 'used');
+    var pooledLimit = nonnegative(pooled, 'limit');
+    // 共享池不能冒充个人剩余额度；仅在个人比例缺失时提供明确标注的团队窗口。
+    if (!windows.length && pooledUsed !== null && pooledLimit !== null && pooledLimit > 0) {
+      addWindow('团队共享额度', pooledUsed / pooledLimit * 100);
+    }
+    var extra = isObject(individual.onDemand) && individual.onDemand.enabled !== false ? individual.onDemand : null;
+    var extraUsed = nonnegative(extra, 'used');
+    var extraLimit = nonnegative(extra, 'limit');
+    if (extraUsed !== null) {
+      details.push('个人额外消费 ' + money(extraUsed) + (extraLimit !== null && extraLimit > 0 ? ' / ' + money(extraLimit) : ''));
+    }
+    if (!details.length && !windows.length) details.push(data.isUnlimited === true ? '当前套餐无固定额度上限' : '接口未提供个人额度上限');
+    return {
+      id: 'cursor',
+      plan: trimmedString(data.membershipType),
+      updatedAt: updatedAt,
+      windows: windows,
+      balance: null,
+      credits: null,
+      booster: null,
+      hint: null,
+      details: details
+    };
+  }
+  function hasWebviewSession(raw) {
+    var value = typeof raw === 'string' ? parseJson(raw) : raw;
+    return isObject(value) && value.type === 'webview';
+  }
+  function fetchCursorUsage(_x) {
+    return _fetchCursorUsage.apply(this, arguments);
+  } // ---------- 归一化快照缓存 ----------
+  function _fetchCursorUsage() {
+    _fetchCursorUsage = _asyncToGenerator(function* (context) {
+      var response = yield http({
+        request: context.request,
+        url: CURSOR_USAGE_URL,
+        headers: {
+          Accept: 'application/json'
+        },
+        cookies: true
+      });
+      if (response.status === 401 || response.status === 403) {
+        throw coreError('AUTH_REQUIRED', 'Cursor 登录已失效或无权查看，请在设置页重新登录并检查');
+      }
+      if (!isSuccess(response.status)) throw coreError('ERROR', 'Cursor 读取失败（' + response.status + '）');
+      return parseCursorUsage(response.body, context.nowSeconds());
+    });
+    return _fetchCursorUsage.apply(this, arguments);
+  }
   function normalizeWindows(raw) {
     if (!Array.isArray(raw)) return [];
     var windows = [];
@@ -982,7 +1085,7 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
     if (wireId === null || wireId !== id) return null;
     var updatedAt = nullableLong(raw, 'updatedAt');
     if (updatedAt === null) return null;
-    return {
+    var snapshot = {
       id: id,
       plan: cacheString(raw.plan),
       updatedAt: updatedAt,
@@ -992,6 +1095,10 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
       booster: normalizeBooster(raw.booster),
       hint: cacheString(raw.hint)
     };
+    if (Array.isArray(raw.details)) snapshot.details = raw.details.filter(function (line) {
+      return typeof line === 'string';
+    });
+    return snapshot;
   }
   function parseCachedProviderSnapshot(text) {
     var json = typeof text === 'string' ? parseJson(text) : isObject(text) ? text : null;
@@ -1009,7 +1116,7 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
    * cookies 为 false 时也必须原样传出：设置页以“是否带有 cookies 字段”选择原生桥。
    * 响应的 url / headers 只供本次跳转判断，不写入快照、状态或日志。
    */
-  function http(_x) {
+  function http(_x2) {
     return _http.apply(this, arguments);
   }
   function _http() {
@@ -1053,7 +1160,7 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
       Accept: 'application/json'
     };
   }
-  function fetchDeepSeek(_x2) {
+  function fetchDeepSeek(_x3) {
     return _fetchDeepSeek.apply(this, arguments);
   }
   function _fetchDeepSeek() {
@@ -1070,7 +1177,7 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
     });
     return _fetchDeepSeek.apply(this, arguments);
   }
-  function readKimiPlan(_x3) {
+  function readKimiPlan(_x4) {
     return _readKimiPlan.apply(this, arguments);
   }
   function _readKimiPlan() {
@@ -1090,7 +1197,7 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
     });
     return _readKimiPlan.apply(this, arguments);
   }
-  function fetchKimi(_x4) {
+  function fetchKimi(_x5) {
     return _fetchKimi.apply(this, arguments);
   }
   function _fetchKimi() {
@@ -1260,7 +1367,7 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
    * mode: session 使用 Profile Cookie；cookie 发送手动 Cookie 且 cookies:false；
    * anonymous 强制 cookies:false，让平台返回签名登录地址。
    */
-  function mimoRequest(_x5, _x6, _x7, _x8) {
+  function mimoRequest(_x6, _x7, _x8, _x9) {
     return _mimoRequest.apply(this, arguments);
   }
   function _mimoRequest() {
@@ -1279,7 +1386,7 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
     });
     return _mimoRequest.apply(this, arguments);
   }
-  function readMimoDetail(_x9, _x0, _x1) {
+  function readMimoDetail(_x0, _x1, _x10) {
     return _readMimoDetail.apply(this, arguments);
   }
   function _readMimoDetail() {
@@ -1294,7 +1401,7 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
     });
     return _readMimoDetail.apply(this, arguments);
   }
-  function loadMimoLoginUrl(_x10) {
+  function loadMimoLoginUrl(_x11) {
     return _loadMimoLoginUrl.apply(this, arguments);
   }
   /** 用已有 Passport 会话走签名回调。Cookie 由宿主按跳读写，这里不解析 Set-Cookie。 */
@@ -1310,7 +1417,7 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
     });
     return _loadMimoLoginUrl.apply(this, arguments);
   }
-  function restoreMimoPassport(_x11, _x12) {
+  function restoreMimoPassport(_x12, _x13) {
     return _restoreMimoPassport.apply(this, arguments);
   }
   function _restoreMimoPassport() {
@@ -1348,7 +1455,7 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
     });
     return _restoreMimoPassport.apply(this, arguments);
   }
-  function fetchMimoUsage(_x13, _x14, _x15) {
+  function fetchMimoUsage(_x14, _x15, _x16) {
     return _fetchMimoUsage.apply(this, arguments);
   } // ---------- Codex 客户端 ----------
   function _fetchMimoUsage() {
@@ -1378,7 +1485,7 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
       accountId: typeof source.accountId === 'string' ? source.accountId : ''
     });
   }
-  function usageRequest(_x16) {
+  function usageRequest(_x17) {
     return _usageRequest.apply(this, arguments);
   }
   /** 轮换单飞：并发 401 只发一次 refresh_token 请求，且写回前重读当前凭据。 */
@@ -1397,7 +1504,7 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
     });
     return _usageRequest.apply(this, arguments);
   }
-  function rotateCodexTokens(_x17, _x18, _x19) {
+  function rotateCodexTokens(_x18, _x19, _x20) {
     return _rotateCodexTokens.apply(this, arguments);
   }
   function _rotateCodexTokens() {
@@ -1435,7 +1542,7 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
     });
     return _rotateCodexTokens.apply(this, arguments);
   }
-  function fetchCodex(_x20, _x21) {
+  function fetchCodex(_x21, _x22) {
     return _fetchCodex.apply(this, arguments);
   }
   function _fetchCodex() {
@@ -1458,7 +1565,7 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
     });
     return _fetchCodex.apply(this, arguments);
   }
-  function pollForAuthorization(_x22, _x23, _x24) {
+  function pollForAuthorization(_x23, _x24, _x25) {
     return _pollForAuthorization.apply(this, arguments);
   } // ---------- create ----------
   function _pollForAuthorization() {
@@ -1513,7 +1620,8 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
       codex: 0,
       kimi: 0,
       deepseek: 0,
-      mimo: 0
+      mimo: 0,
+      cursor: 0
     };
     var context = {
       storage: storage,
@@ -1527,7 +1635,7 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
     };
 
     /** 写入前校验代数，写入期间发生变化则撤回，避免清理后残留旧数据。 */
-    function guardedSet(_x25, _x26, _x27, _x28) {
+    function guardedSet(_x26, _x27, _x28, _x29) {
       return _guardedSet.apply(this, arguments);
     }
     function _guardedSet() {
@@ -1544,7 +1652,7 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
       return _guardedSet.apply(this, arguments);
     }
     context.guardedSet = guardedSet;
-    function readSecret(_x29) {
+    function readSecret(_x30) {
       return _readSecret.apply(this, arguments);
     }
     function _readSecret() {
@@ -1556,7 +1664,7 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
       });
       return _readSecret.apply(this, arguments);
     }
-    function readSnapshot(_x30) {
+    function readSnapshot(_x31) {
       return _readSnapshot.apply(this, arguments);
     }
     function _readSnapshot() {
@@ -1567,7 +1675,7 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
       });
       return _readSnapshot.apply(this, arguments);
     }
-    function readStatus(_x31) {
+    function readStatus(_x32) {
       return _readStatus.apply(this, arguments);
     }
     function _readStatus() {
@@ -1586,18 +1694,19 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
       });
       return _readStatus.apply(this, arguments);
     }
-    function isConfigured(_x32) {
+    function isConfigured(_x33) {
       return _isConfigured.apply(this, arguments);
     }
     function _isConfigured() {
       _isConfigured = _asyncToGenerator(function* (id) {
         if (id === 'codex') return normalizeCodexAuth(yield storage.get(authKey(id))) !== null;
         if (id === 'mimo') return parseMimoAuth(yield storage.get(authKey(id))) !== null;
+        if (id === 'cursor') return hasWebviewSession(yield storage.get(authKey(id)));
         return (yield readSecret(id)) !== null;
       });
       return _isConfigured.apply(this, arguments);
     }
-    function writeStatus(_x33, _x34, _x35) {
+    function writeStatus(_x34, _x35, _x36) {
       return _writeStatus.apply(this, arguments);
     }
     function _writeStatus() {
@@ -1616,7 +1725,7 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
       });
       return _writeStatus.apply(this, arguments);
     }
-    function persistSnapshot(_x36, _x37, _x38) {
+    function persistSnapshot(_x37, _x38, _x39) {
       return _persistSnapshot.apply(this, arguments);
     }
     function _persistSnapshot() {
@@ -1630,12 +1739,13 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
       });
       return _persistSnapshot.apply(this, arguments);
     }
-    function fetchProvider(_x39, _x40) {
+    function fetchProvider(_x40, _x41) {
       return _fetchProvider.apply(this, arguments);
     }
     function _fetchProvider() {
       _fetchProvider = _asyncToGenerator(function* (id, generation) {
         if (id === 'codex') return fetchCodex(context, generation);
+        if (id === 'cursor') return fetchCursorUsage(context);
         if (id === 'mimo') {
           var auth = parseMimoAuth(yield storage.get(authKey('mimo')));
           if (auth === null) throw coreError('AUTH_REQUIRED', '尚未设置');
@@ -1650,7 +1760,7 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
       });
       return _fetchProvider.apply(this, arguments);
     }
-    function runRefresh(_x41) {
+    function runRefresh(_x42) {
       return _runRefresh.apply(this, arguments);
     }
     function _runRefresh() {
@@ -1672,12 +1782,48 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
       });
       return _runRefresh.apply(this, arguments);
     }
+    function visibleProviderIds() {
+      return _visibleProviderIds.apply(this, arguments);
+    }
+    function _visibleProviderIds() {
+      _visibleProviderIds = _asyncToGenerator(function* () {
+        var raw = yield storage.get(DISPLAY_PROVIDERS_KEY);
+        var saved = typeof raw === 'string' ? parseJson(raw) : raw;
+        var ids = [];
+        for (var i = 0; i < PROVIDERS.length; i++) {
+          var id = PROVIDERS[i].id;
+          if (Array.isArray(saved) && saved.indexOf(id) === -1) continue;
+          if (yield isConfigured(id)) ids.push(id);
+        }
+        // 无偏好时兼容已有四个来源；新安装只配置 Cursor 时也会默认展示它。
+        return ids.slice(0, MAX_DISPLAY_PROVIDERS);
+      });
+      return _visibleProviderIds.apply(this, arguments);
+    }
+    function setProviderVisible(_x43, _x44) {
+      return _setProviderVisible.apply(this, arguments);
+    }
+    function _setProviderVisible() {
+      _setProviderVisible = _asyncToGenerator(function* (id, visible) {
+        if (!findProvider(id)) throw coreError('ERROR', '不支持的来源');
+        if (!(yield isConfigured(id))) throw coreError('ERROR', '请先配置该来源');
+        var ids = yield visibleProviderIds();
+        var index = ids.indexOf(id);
+        if (visible && index === -1) {
+          if (ids.length >= MAX_DISPLAY_PROVIDERS) throw coreError('ERROR', '背屏最多展示 4 个来源，请先取消一个');
+          ids.push(id);
+        } else if (!visible && index !== -1) ids.splice(index, 1);
+        yield storage.set(DISPLAY_PROVIDERS_KEY, JSON.stringify(ids));
+      });
+      return _setProviderVisible.apply(this, arguments);
+    }
     function state() {
       return _state.apply(this, arguments);
     }
-    /** 卡片展示数据：只包含已配置来源，缺省字段不输出。 */
+    /** 卡片展示数据：仅勾选且已配置的最多四个来源，缺省字段不输出。 */
     function _state() {
       _state = _asyncToGenerator(function* () {
+        var visible = yield visibleProviderIds();
         var rows = [];
         for (var i = 0; i < PROVIDERS.length; i++) {
           var provider = PROVIDERS[i];
@@ -1686,6 +1832,7 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
             name: provider.name,
             logoAsset: provider.logoAsset,
             configured: yield isConfigured(provider.id),
+            visible: visible.indexOf(provider.id) !== -1,
             snapshot: yield readSnapshot(provider.id),
             status: yield readStatus(provider.id)
           });
@@ -1701,9 +1848,10 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
       _cardConfig = _asyncToGenerator(function* () {
         var entries = [];
         var newest = null;
+        var visible = yield visibleProviderIds();
         for (var i = 0; i < PROVIDERS.length; i++) {
           var provider = PROVIDERS[i];
-          if (!(yield isConfigured(provider.id))) continue;
+          if (visible.indexOf(provider.id) === -1) continue;
           var snapshot = yield readSnapshot(provider.id);
           var entry = {
             id: provider.id,
@@ -1748,6 +1896,7 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
               entry.booster = booster;
             }
             if (snapshot.hint !== null) entry.hint = snapshot.hint;
+            if (snapshot.details) entry.details = snapshot.details;
             entry.updatedAt = snapshot.updatedAt;
             if (newest === null || snapshot.updatedAt > newest) newest = snapshot.updatedAt;
           }
@@ -1761,7 +1910,7 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
       });
       return _cardConfig.apply(this, arguments);
     }
-    function saveSecret(_x42, _x43) {
+    function saveSecret(_x45, _x46) {
       return _saveSecret.apply(this, arguments);
     }
     function _saveSecret() {
@@ -1780,7 +1929,7 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
       });
       return _saveSecret.apply(this, arguments);
     }
-    function clear(_x44) {
+    function clear(_x47) {
       return _clear.apply(this, arguments);
     }
     function _clear() {
@@ -1793,7 +1942,7 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
       });
       return _clear.apply(this, arguments);
     }
-    function refresh(_x45) {
+    function refresh(_x48) {
       return _refresh.apply(this, arguments);
     }
     /** 不要求事先配置。成功后写入网页会话标记并覆盖旧的手动 Cookie；失败不新标记为已配置。 */
@@ -1828,12 +1977,35 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
     function requestMimoLoginUrl() {
       return _requestMimoLoginUrl.apply(this, arguments);
     }
-    /** 逐来源刷新；单来源失败只写状态，最后返回完整 state 数组。 */
     function _requestMimoLoginUrl() {
       _requestMimoLoginUrl = _asyncToGenerator(function* () {
         return loadMimoLoginUrl(context);
       });
       return _requestMimoLoginUrl.apply(this, arguments);
+    }
+    function checkCursorLogin() {
+      return _checkCursorLogin.apply(this, arguments);
+    }
+    /** 逐来源刷新；单来源失败只写状态，最后返回完整 state 数组。 */
+    function _checkCursorLogin() {
+      _checkCursorLogin = _asyncToGenerator(function* () {
+        var generation = generations.cursor;
+        var configured = yield isConfigured('cursor');
+        try {
+          var snapshot = yield fetchCursorUsage(context);
+          yield guardedSet('cursor', generation, authKey('cursor'), JSON.stringify({
+            type: 'webview'
+          }));
+          yield persistSnapshot('cursor', snapshot, generation);
+          return snapshot;
+        } catch (error) {
+          var failure = toCoreError(error);
+          if (generations.cursor !== generation) throw cancelledError();
+          if (configured) yield writeStatus('cursor', failure, generation);
+          throw failure;
+        }
+      });
+      return _checkCursorLogin.apply(this, arguments);
     }
     function refreshAll() {
       return _refreshAll.apply(this, arguments);
@@ -1872,7 +2044,7 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
       });
       return _requestDeviceCode.apply(this, arguments);
     }
-    function completeDeviceLogin(_x46, _x47) {
+    function completeDeviceLogin(_x49, _x50) {
       return _completeDeviceLogin.apply(this, arguments);
     }
     function _completeDeviceLogin() {
@@ -1916,6 +2088,8 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
     return {
       state: state,
       cardConfig: cardConfig,
+      setProviderVisible: setProviderVisible,
+      checkCursorLogin: checkCursorLogin,
       saveSecret: saveSecret,
       clear: clear,
       refresh: refresh,
@@ -1945,6 +2119,7 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
       parseDeepSeekBalance: parseDeepSeekBalance,
       parseMimoUsage: parseMimoUsage,
       parseMimoDetail: parseMimoDetail,
+      parseCursorUsage: parseCursorUsage,
       parseFlexibleEpoch: parseFlexibleEpoch
     }
   };

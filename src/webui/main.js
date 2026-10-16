@@ -8,16 +8,20 @@
  *
  * 职责：
  *   - Kimi Code / DeepSeek 保存 API Key 并刷新；Codex 设备码登录（可取消、外链验证、手动复制）；
- *     MiMo 使用桥的独立登录窗口，关闭窗口后检查登录；Cookie 留在宿主的模块 Profile 中。
+ *     MiMo 与 Cursor 使用桥的独立登录窗口，关闭窗口后检查登录；Cookie 留在宿主的模块 Profile 中。
+ *     MiMo 仍先获取签名登录入口；Cursor 直接打开用量页，没有签名入口。
+ *   - 每个来源可勾选是否在背屏显示，最多 4 个，勾选后自动保存；取消勾选只隐藏预览与背屏，不清除凭据或网页会话。
  *   - 凭据只经 core 写入 bridge.storage。
  *     凭据不进日志、不进预览消息、不落浏览器本地存储。
- *   - 用量或授权变化后调用 bridge.card.requestRefresh() 让卡片重读缓存。
+ *   - 用量、授权或背屏勾选变化后调用 bridge.card.requestRefresh() 让卡片重读缓存。
  */
 (function () {
   'use strict';
 
-  /** MiMo 通过原生网络使用模块 Profile；其他来源保持 WebView fetch。 */
-  var WEBUI_REFRESHABLE = { codex: true, kimi: true, deepseek: true, mimo: true };
+  /** MiMo / Cursor 通过原生网络使用模块 Profile；其他来源保持 WebView fetch。 */
+  var WEBUI_REFRESHABLE = { codex: true, kimi: true, deepseek: true, mimo: true, cursor: true };
+  var CURSOR_USAGE_PAGE = 'https://cursor.com/dashboard/usage';
+  var MAX_CARD_PROVIDERS = 4;
 
   var bridge = window.bridge;
   var core = window.AiUsageCore;
@@ -97,7 +101,7 @@
     return message ? (time ? message + ' · ' + time : message) : '';
   }
 
-  function metricLines(snapshot) {
+  function metricLines(snapshot, id) {
     var source = snapshot || {};
     var lines = [];
     var windows = source.windows || [];
@@ -128,13 +132,20 @@
       }
       lines.push(boosterLine);
     }
+    if (id === 'cursor' && source.plan) lines.push('套餐 ' + source.plan);
+    var details = source.details;
+    if (Array.isArray(details)) {
+      for (var d = 0; d < details.length; d++) {
+        if (typeof details[d] === 'string' && details[d]) lines.push(details[d]);
+      }
+    }
     return lines;
   }
 
   /* ---------- 设置页网络传输 ---------- */
 
   /**
-   * MiMo 的显式 cookies 选项交给原生桥，保留响应头与手动跳转控制。
+   * MiMo / Cursor 的显式 cookies 选项交给原生桥，保留响应头与手动跳转控制。
    * 其他来源使用 fetch + AbortController 超时，默认 30 秒，credentials:'omit'；
    * 失败只抛安全的通用错误，不附带原始响应。
    */
@@ -177,8 +188,15 @@
 
   function authKind(id) {
     if (id === 'codex') return 'device';
-    if (id === 'mimo') return 'mimo';
+    if (id === 'mimo' || id === 'cursor') return 'webview';
     return 'key';
+  }
+
+  function webviewNotice(id) {
+    if (id === 'cursor') {
+      return '在新窗口打开 Cursor 用量页并完成网页登录，关闭窗口后点“检查登录”。Cookie 留在模块独立 Profile，无需手动填写，设置页也不读取本机 Cookie。';
+    }
+    return '在卡片桥的独立窗口中登录小米账号，完成后关闭窗口，再点“检查登录”。设置页与背屏共用模块会话，无需复制 Cookie。需要支持模块独立会话的新版卡片桥。';
   }
 
   function authHtml(id) {
@@ -205,9 +223,9 @@
         '  <button id="clear-' + id + '" type="button" class="btn btn-danger">退出登录</button>' +
         '</div>';
     }
-    if (kind === 'mimo') {
+    if (kind === 'webview') {
       return '' +
-        '<p class="notice">在卡片桥的独立窗口中登录小米账号，完成后关闭窗口，再点“检查登录”。设置页与背屏共用模块会话，无需复制 Cookie。需要支持模块独立会话的新版卡片桥。</p>' +
+        '<p class="notice">' + esc(webviewNotice(id)) + '</p>' +
         '<div class="actions">' +
         '  <button id="login-' + id + '" type="button" class="btn btn-primary">网页登录</button>' +
         '  <button id="check-' + id + '" type="button" class="btn">检查登录</button>' +
@@ -249,6 +267,7 @@
         '  <ul class="metrics" id="metrics-' + esc(id) + '"></ul>' +
         '  <p class="provider-status" id="status-' + esc(id) + '"></p>' +
         '  <div class="banner banner-error" id="error-' + esc(id) + '" role="alert" hidden></div>' +
+        '  <label class="show-on-card"><input id="visible-' + esc(id) + '" type="checkbox"><span>在背屏显示</span></label>' +
         '  ' + authHtml(id) +
         '</article>';
     }
@@ -277,6 +296,7 @@
       save: byId('save-' + id),
       refresh: byId('refresh-' + id),
       clear: byId('clear-' + id),
+      visible: byId('visible-' + id),
       login: byId('login-' + id),
       check: byId('check-' + id),
       copy: byId('copy-' + id),
@@ -290,11 +310,18 @@
     if (entry.save) entry.save.addEventListener('click', function () { saveSecret(id); });
     if (entry.refresh) entry.refresh.addEventListener('click', function () { refreshProvider(id); });
     if (entry.clear) entry.clear.addEventListener('click', function () { clearProvider(id); });
+    if (entry.visible) entry.visible.addEventListener('change', function () {
+      setProviderVisible(id, !!entry.visible.checked);
+    });
     if (entry.login) entry.login.addEventListener('click', function () {
       if (id === 'mimo') startMimoLogin();
+      else if (id === 'cursor') startCursorLogin();
       else startDeviceLogin(id);
     });
-    if (entry.check) entry.check.addEventListener('click', function () { checkMimoLogin(); });
+    if (entry.check) entry.check.addEventListener('click', function () {
+      if (id === 'cursor') checkCursorLogin();
+      else checkMimoLogin();
+    });
     if (entry.cancelDevice) entry.cancelDevice.addEventListener('click', function () { cancelDeviceSession('已取消登录'); });
     if (entry.copy) entry.copy.addEventListener('click', function () { copyCode(id); });
   }
@@ -326,9 +353,18 @@
     entry.error.hidden = !rowErrors[id];
   }
 
+  function visibleCount() {
+    var count = 0;
+    for (var i = 0; i < rows.length; i++) {
+      if (rows[i] && rows[i].visible) count++;
+    }
+    return count;
+  }
+
   function updateEnabled() {
     var hasClient = !!client;
     var ready = hasClient && !busy;
+    var shown = visibleCount();
     if (dom.refreshAll) dom.refreshAll.disabled = !ready;
     for (var id in ui) {
       if (!Object.prototype.hasOwnProperty.call(ui, id)) continue;
@@ -336,12 +372,17 @@
       var row = findRow(id);
       var configured = !!(row && row.configured);
       var inSession = !!(device && device.id === id);
+      var shownHere = !!(configured && row && row.visible);
       if (entry.secret) entry.secret.disabled = !ready;
       if (entry.save) entry.save.disabled = !ready;
       if (entry.refresh) entry.refresh.disabled = !ready || !configured;
       if (entry.clear) entry.clear.disabled = !ready || !configured;
       if (entry.login) entry.login.disabled = !ready || inSession;
       if (entry.check) entry.check.disabled = !ready;
+      if (entry.visible) {
+        entry.visible.checked = shownHere;
+        entry.visible.disabled = !ready || !configured || (shown >= MAX_CARD_PROVIDERS && !shownHere);
+      }
       if (entry.cancelDevice) entry.cancelDevice.disabled = !inSession;
       if (entry.copy) entry.copy.disabled = !inSession;
     }
@@ -376,12 +417,12 @@
         entry.cache.textContent = updated ? '缓存 ' + updated : '暂无缓存';
       }
       if (entry.metrics) {
-        var lines = configured ? metricLines(snapshot) : [];
+        var lines = configured ? metricLines(snapshot, id) : [];
         var html = '';
         for (var i = 0; i < lines.length; i++) html += '<li>' + esc(lines[i]) + '</li>';
         if (!lines.length) html = '<li class="muted">' + (configured
           ? '暂无用量数据，点刷新获取'
-          : (id === 'mimo' ? '尚未确认网页登录，请登录后检查' : '尚未配置凭据')) + '</li>';
+          : ((id === 'mimo' || id === 'cursor') ? '尚未确认网页登录，请登录后检查' : '尚未配置凭据')) + '</li>';
         entry.metrics.innerHTML = html;
       }
       if (entry.status) entry.status.textContent = statusText(row);
@@ -404,13 +445,29 @@
     sendPreview();
   }
 
-  /** 用量或授权变化后通知卡片重读缓存（卡片自行判断是否需要查询）。 */
+  /** 用量、授权或背屏勾选变化后通知卡片重读缓存（卡片自行判断是否需要查询）。 */
   function notifyCard() {
     if (!bridge || !bridge.card || !bridge.card.requestRefresh) return;
     try {
       var result = bridge.card.requestRefresh();
       if (result && typeof result.catch === 'function') result.catch(function () {});
     } catch (_) { /* 桥暂不可用时忽略，不影响本页状态。 */ }
+  }
+
+  async function setProviderVisible(id, visible) {
+    if (!client || busy) return;
+    setBusy(true, '');
+    showRowError(id, null);
+    try {
+      await client.setProviderVisible(id, visible);
+      showGlobal(providerName(id) + (visible ? ' 将显示在背屏' : ' 已从背屏隐藏，登录保留'));
+      notifyCard();
+    } catch (error) {
+      showRowError(id, errorText(error));
+    } finally {
+      await reload();
+      setBusy(false);
+    }
   }
 
   async function saveSecret(id) {
@@ -446,7 +503,7 @@
       await client.clear(id);
       var entry = ui[id];
       if (entry && entry.secret) entry.secret.value = '';
-      showGlobal(providerName(id) + (id === 'mimo' ? ' 已移除，网页登录会话保留' : ' 已退出登录'));
+      showGlobal(providerName(id) + ((id === 'mimo' || id === 'cursor') ? ' 已移除，网页登录会话保留' : ' 已退出登录'));
       notifyCard();
       await reload();
     } catch (error) {
@@ -473,7 +530,7 @@
     }
   }
 
-  /** 逐来源刷新；MiMo 请求由 request 适配器交给原生桥。 */
+  /** 逐来源刷新；携带 cookies 的请求由 request 适配器交给原生桥。 */
   async function refreshAll() {
     if (!client || busy) return;
     setBusy(true, '正在刷新…');
@@ -531,6 +588,33 @@
       notifyCard();
     } catch (error) {
       showRowError('mimo', errorText(error));
+      showGlobal('');
+    } finally {
+      await reload();
+      setBusy(false);
+    }
+  }
+
+  function startCursorLogin() {
+    if (!client || busy) return;
+    showRowError('cursor', null);
+    if (!window.open(CURSOR_USAGE_PAGE, '_blank')) {
+      showRowError('cursor', '无法打开登录窗口，请在新版卡片桥中重试');
+      return;
+    }
+    showGlobal('请在新窗口完成 Cursor 登录，关闭窗口后点击“检查登录”');
+  }
+
+  async function checkCursorLogin() {
+    if (!client || busy) return;
+    setBusy(true, '正在检查 Cursor 登录…');
+    showRowError('cursor', null);
+    try {
+      await client.checkCursorLogin();
+      showGlobal('Cursor 登录已确认，用量已更新');
+      notifyCard();
+    } catch (error) {
+      showRowError('cursor', errorText(error));
       showGlobal('');
     } finally {
       await reload();

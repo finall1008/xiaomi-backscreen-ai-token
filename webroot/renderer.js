@@ -27,7 +27,8 @@
     codex:    { color: '#e8e9f0', initial: 'C' },
     kimi:     { color: '#5e8bff', initial: 'K' },
     deepseek: { color: '#4d6bfe', initial: 'D' },
-    mimo:     { color: '#ff6900', initial: 'M' }
+    mimo:     { color: '#ff6900', initial: 'M' },
+    cursor:   { color: '#e8e9f0', initial: 'C' }
   };
 
   function barColor(p) {
@@ -250,7 +251,7 @@
     ctx.fillStyle = C.dim;
     ctx.font = '400 20px sans-serif';
     var foot = known ? (win.title + ' · ' + fmtResetShort(win.resetAt))
-      : (p.balance ? 'DeepSeek 开放平台' : '等待首次刷新');
+      : (p.balance ? 'DeepSeek 开放平台' : (p.id === 'cursor' && p.updatedAt ? '未提供额度比例' : '等待首次刷新'));
     ctx.fillText(fitText(foot, r.w - pad * 2), r.x + pad, r.y + r.h - 52);
     if (known) progressBar(r.x + pad, r.y + r.h - 36, r.w - pad * 2, 10, pct, color);
   }
@@ -369,8 +370,8 @@
     drawDetailHeader(p);
     var wins = p.windows || [];
 
-    // 附加明细（Credits / 加油包 / 有效期）
-    var lines = [];
+    // 附加明细（Credits / 加油包 / 有效期 / Cursor 消费）
+    var lines = (p.details || []).slice();
     if (p.credits) {
       lines.push('已用 ' + fmtBig(p.credits.used) + ' / 总量 ' + fmtBig(p.credits.limit) + ' Credits');
       if (p.credits.periodEnd) lines.push('当前周期至 ' + fmtDate(p.credits.periodEnd));

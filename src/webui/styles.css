@@ -291,6 +291,30 @@ body > .banner {
   margin: 10px 0 0;
 }
 
+.sources-note {
+  margin: 0 0 10px;
+}
+
+.show-on-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  font-size: 13.5px;
+}
+
+.show-on-card input {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  padding: 0;
+  flex: none;
+}
+
+.show-on-card input:disabled + span {
+  opacity: 0.5;
+}
+
 /* ---------- 表单与按钮 ---------- */
 
 .field {

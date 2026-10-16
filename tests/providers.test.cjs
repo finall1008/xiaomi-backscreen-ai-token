@@ -133,14 +133,15 @@ test('providers contract, secret lifecycle and state rows', async () => {
     { id: 'codex', name: 'Codex', logoAsset: 'assets/openai.png' },
     { id: 'kimi', name: 'Kimi Code', logoAsset: 'assets/kimi.png' },
     { id: 'deepseek', name: 'DeepSeek', logoAsset: 'assets/deepseek.png' },
-    { id: 'mimo', name: '小米 MiMo', logoAsset: 'assets/mimo.png' }
+    { id: 'mimo', name: '小米 MiMo', logoAsset: 'assets/mimo.png' },
+    { id: 'cursor', name: 'Cursor', logoAsset: 'assets/cursor.png' }
   ]);
 
   const storage = makeStorage();
   const client = core.create({ storage, request: scripted(() => { throw new Error('unused'); }) });
 
   const rows = await client.state();
-  assert.equal(rows.length, 4);
+  assert.equal(rows.length, 5);
   for (const row of rows) {
     assert.equal(row.configured, false);
     assert.equal(row.snapshot, null);
@@ -166,7 +167,7 @@ test('providers contract, secret lifecycle and state rows', async () => {
   await client.saveSecret('mimo', 'session=abc');
   const configured = await client.state();
   assert.deepEqual(plain(configured.map(row => [row.id, row.configured])),
-    [['codex', false], ['kimi', true], ['deepseek', true], ['mimo', true]]);
+    [['codex', false], ['kimi', true], ['deepseek', true], ['mimo', true], ['cursor', false]]);
   assert.ok(!JSON.stringify(configured).includes('secret'), 'state 不返回凭据');
 
   await client.clear('kimi');
@@ -1095,7 +1096,7 @@ test('refreshAll isolates failures and returns full state', async () => {
   const client = core.create({ storage, request, now: () => 40000 });
 
   const rows = await client.refreshAll();
-  assert.deepEqual(plain(rows.map(row => row.id)), ['codex', 'kimi', 'deepseek', 'mimo']);
+  assert.deepEqual(plain(rows.map(row => row.id)), ['codex', 'kimi', 'deepseek', 'mimo', 'cursor']);
   const kimi = rows.find(row => row.id === 'kimi');
   assert.equal(kimi.status.code, 'ERROR');
   assert.equal(kimi.status.message, 'Kimi Code 读取失败（500）');
@@ -1144,6 +1145,92 @@ test('cardConfig produces display-only data and never leaks auth', async () => {
   const emptyConfig = await empty.cardConfig();
   assert.equal(emptyConfig.updatedAt, 0);
   assert.equal(emptyConfig.providers.length, 1);
+});
+
+const CURSOR_SUMMARY = {
+  membershipType: 'enterprise', billingCycleStart: '2026-04-02T14:00:00Z', billingCycleEnd: '2026-05-02T14:00:00Z',
+  individualUsage: {
+    overall: { enabled: true, used: 2500, limit: 10000 },
+    plan: { enabled: true, used: 2000, limit: 2000, totalPercentUsed: 100 },
+    onDemand: { enabled: true, used: 500, limit: null }
+  },
+  teamUsage: { pooled: { used: 800000, limit: 1000000 } }
+};
+
+test('Cursor seat uses the personal cap, separates shared quota, and preserves unknown limits', () => {
+  const { core } = loadCore();
+  const parse = data => plain(core.parsers.parseCursorUsage(JSON.stringify(data), 123));
+  const seat = parse(CURSOR_SUMMARY);
+  assert.equal(seat.plan, 'enterprise');
+  assert.equal(seat.windows[0].title, '个人本期额度');
+  assert.equal(seat.windows[0].usedPercent, 25, '个人预算优先于套餐内的100%和团队池的80%');
+  assert.equal(seat.windows[0].resetAt, epoch(2026, 4, 2, 14));
+  assert.equal(seat.windows[0].windowSeconds, 30 * 86400);
+  assert.deepEqual(seat.details, ['个人本期已用 $25.00 / $100.00', '个人额外消费 $5.00']);
+  const shared = parse({ ...CURSOR_SUMMARY, individualUsage: { overall: { used: 2500, limit: null } } });
+  assert.equal(shared.windows[0].title, '团队共享额度');
+  assert.equal(shared.windows[0].usedPercent, 80);
+  assert.match(shared.details[0], /个人本期已用 \$25\.00.*上限未提供/);
+  const unknown = parse({ membershipType: 'team', individualUsage: { overall: { used: 0, limit: null } } });
+  assert.deepEqual(unknown.windows, [], '不能把缺少个人上限显示成0%');
+  assert.match(unknown.details[0], /\$0\.00.*上限未提供/);
+  const pro = parse({ membershipType: 'pro', individualUsage: { plan: {
+    used: 7, limit: 2000, totalPercentUsed: 0.36, autoPercentUsed: 0, apiPercentUsed: 0.5
+  } } });
+  assert.deepEqual(pro.windows.map(win => win.usedPercent), [0.36, 0, 0.5], '官网百分比不再乘100');
+  assert.throws(() => parse({}), { code: 'ERROR' });
+});
+
+test('Cursor login checks use the profile, cache only display data, and retain success after expiry', async () => {
+  const { core } = loadCore();
+  const storage = makeStorage();
+  let response = { status: 401, body: 'raw session secret' };
+  const request = scripted(options => {
+    assert.equal(options.url, 'https://cursor.com/api/usage-summary');
+    assert.equal(options.cookies, true);
+    assert.equal(options.headers.Cookie, undefined);
+    return response;
+  });
+  const client = core.create({ storage, request, now: () => 123000 });
+  await assert.rejects(client.checkCursorLogin(), { code: 'AUTH_REQUIRED' });
+  assert.deepEqual(storage.data, {}, '失败登录不新增标记');
+  response = { status: 200, body: JSON.stringify({ ...CURSOR_SUMMARY, privateField: 'raw session secret' }) };
+  await client.checkCursorLogin();
+  assert.deepEqual(JSON.parse(storage.data['auth.cursor']), { type: 'webview' });
+  const config = plain(await client.cardConfig());
+  assert.equal(config.providers[0].id, 'cursor', '只配置Cursor时默认展示');
+  assert.deepEqual(config.providers[0].details, ['个人本期已用 $25.00 / $100.00', '个人额外消费 $5.00']);
+  assert.ok(!JSON.stringify(storage.data).includes('raw session secret'));
+  assert.ok(!JSON.stringify(config).includes('webview'));
+  response = { status: 403, body: 'raw session secret' };
+  await assert.rejects(client.refresh('cursor'), { code: 'AUTH_REQUIRED' });
+  assert.equal((await client.state()).find(row => row.id === 'cursor').snapshot.updatedAt, 123);
+  assert.ok(!JSON.stringify(storage.data).includes('raw session secret'));
+  await client.clear('cursor');
+  assert.deepEqual(storage.data, {});
+});
+
+test('display selection caps at four and persists hiding without clearing credentials or cached usage', async () => {
+  const { core } = loadCore();
+  const storage = makeStorage({
+    'auth.codex': { accessToken: 'access', refreshToken: 'refresh', accountId: 'account' },
+    'auth.kimi': 'kimi-key', 'auth.deepseek': 'deepseek-key', 'auth.mimo': { type: 'webview' },
+    'auth.cursor': { type: 'webview' }, 'usage.kimi': { id: 'kimi', updatedAt: 1, windows: [] }
+  });
+  const options = { storage, request: scripted(() => { throw new Error('unused'); }) };
+  const client = core.create(options);
+  assert.deepEqual(plain((await client.cardConfig()).providers.map(p => p.id)), ['codex', 'kimi', 'deepseek', 'mimo']);
+  await assert.rejects(client.setProviderVisible('cursor', true), /最多展示 4/);
+  assert.equal(storage.data['display.providers'], undefined);
+  await client.setProviderVisible('kimi', false);
+  assert.equal(storage.data['auth.kimi'], 'kimi-key');
+  assert.ok(storage.data['usage.kimi']);
+  await client.setProviderVisible('cursor', true);
+  const reloaded = core.create(options);
+  assert.deepEqual(plain((await reloaded.cardConfig()).providers.map(p => p.id)), ['codex', 'deepseek', 'mimo', 'cursor']);
+  assert.equal((await reloaded.state()).find(row => row.id === 'kimi').visible, false);
+  for (const id of ['codex', 'deepseek', 'mimo', 'cursor']) await reloaded.setProviderVisible(id, false);
+  assert.deepEqual(plain((await reloaded.cardConfig()).providers), [], '取消全部不回退到默认来源');
 });
 
 test('generation guards drop stale in-flight writes after clear or replaced secrets', async () => {

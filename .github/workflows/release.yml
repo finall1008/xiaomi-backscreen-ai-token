@@ -56,12 +56,15 @@ jobs:
         with:
           files: dist/ai-usage-*.zip
           body: |
-            AI 用量背屏模块（rear-card-bridge API v2），支持 Codex、Kimi Code、DeepSeek 与小米 MiMo。
+            AI 用量背屏模块（rear-card-bridge API v2），支持 Codex、Kimi Code、DeepSeek、小米 MiMo 与 Cursor。
 
+            - 新增 Cursor 网页登录与个人／团队席位用量展示，无需管理员密钥。
+            - 设置中勾选最多四个背屏来源，保持原有 2×2 总览；隐藏来源保留登录与用量。
             - 可在卡片桥中直接从仓库导入：https://github.com/finall1008/xiaomi-backscreen-ai-token（main）。
             - 也可下载本 Release 的 ai-usage ZIP，通过「安装 ZIP 模块」安装。
             - 首页下拉刷新全部来源，详情顶部下拉只刷新当前来源；后台周期由桥统一设置。
-            - 使用包含模块独立网页登录会话与统一后台调度的新版卡片桥。
+            - 建议使用卡片桥 v1.2.1 或更新版本，包含 MiMo 登录窗口白屏修复。
+            - 新增 Cursor 静态图标后，需要更新载体并在系统背屏设置重新应用。
           generate_release_notes: true
 
       - name: Check module shop credentials
