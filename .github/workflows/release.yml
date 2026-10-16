@@ -63,3 +63,29 @@ jobs:
             - 首页下拉刷新全部来源，详情顶部下拉只刷新当前来源；后台周期由桥统一设置。
             - 使用包含模块独立网页登录会话与统一后台调度的新版卡片桥。
           generate_release_notes: true
+
+      - name: Check module shop credentials
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          MODULE_STORE_TOKEN: ${{ secrets.MODULE_STORE_TOKEN }}
+        run: |
+          test -n "$MODULE_STORE_TOKEN" || { echo "::error::Set MODULE_STORE_TOKEN with Contents read/write access to finall1008/rear-card-modules"; exit 1; }
+
+      - name: Checkout module shop publisher
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/checkout@v5
+        with:
+          repository: finall1008/rear-card-modules
+          ref: main
+          path: _module-store
+          token: ${{ secrets.MODULE_STORE_TOKEN }}
+          persist-credentials: false
+
+      - name: Update module shop
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          MODULE_STORE_TOKEN: ${{ secrets.MODULE_STORE_TOKEN }}
+        run: |
+          python3 _module-store/scripts/publish-module.py \
+            "dist/ai-usage-${GITHUB_REF_NAME#v}.zip" \
+            --repository "$GITHUB_REPOSITORY" --tag "$GITHUB_REF_NAME"
