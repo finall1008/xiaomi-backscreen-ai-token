@@ -18,7 +18,7 @@ async function collect(directory, prefix, entries) {
 }
 
 export async function moduleEntries() {
-  const entries = { 'module.json': await read('module.json') };
+  const entries = { 'module.json': await read('module.json'), 'icon.png': await read('icon.png') };
   await collect('src/card', 'card', entries);
   await collect('src/webui', 'webroot', entries);
   const core = await read('src/shared/core.js');
