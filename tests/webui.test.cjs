@@ -16,19 +16,23 @@ const tick = (rounds = 4) => new Promise(resolve => {
 
 /* ---------- 静态约定 ---------- */
 
-test('index.html：首个脚本是宿主注入的 bridge-shim，随后 core.js、main.js', () => {
+test('index.html：首个脚本是宿主注入的 bridge-shim，随后 core.js、appearance.js、wallpapers.js、main.js', () => {
   const html = read('index.html');
   const scripts = [...html.matchAll(/<script src="([^"]+)"/g)].map(match => match[1]);
-  assert.deepEqual(scripts, ['bridge-shim.js', 'core.js', 'main.js']);
+  assert.deepEqual(scripts, ['bridge-shim.js', 'core.js', 'appearance.js', 'wallpapers.js', 'main.js']);
+  assert.match(html, /id="wallpaper-file"[^>]*accept="image\/jpeg,image\/png,image\/webp"[^>]*\smultiple[\s>]/);
+  assert.ok(html.includes('卡片外观'));
   assert.ok(html.includes('请在卡片桥内打开模块设置'));
   assert.ok(!html.includes('刷新设置'));
   assert.ok(!html.includes('refresh-minutes'));
   assert.ok(!read('main.js').includes('refreshMinutes'));
   assert.ok(!read('main.js').includes('bridge.config'));
+  assert.ok(read('main.js').includes('AiUsageWallpaperSettings'));
+  assert.ok(read('main.js').includes('pageKey'));
 });
 
 test('webui 不使用 localStorage / Cookie 请求头 / 远程资源', () => {
-  for (const name of ['index.html', 'main.js', 'styles.css']) {
+  for (const name of ['index.html', 'main.js', 'styles.css', 'wallpapers.js']) {
     const source = read(name);
     assert.ok(!source.includes('localStorage'), name + ' 不回退 localStorage');
     assert.ok(!source.includes('document.cookie'), name + ' 不读写 cookie');
@@ -113,6 +117,9 @@ function makeEnvironment({ bridge, core }) {
   // 与 index.html 一致：两条横幅初始为 hidden，运行后由脚本按条件展示。
   document.getElementById('bridge-notice').hidden = true;
   document.getElementById('resource-error').hidden = true;
+  for (const id of ['wallpaper-add', 'wallpaper-clear', 'wallpaper-file']) {
+    controls.push(document.getElementById(id));
+  }
   vm.createContext(sandbox);
   vm.runInContext(read('main.js'), sandbox, { filename: 'main.js' });
   return { elements, controls, posted, fetchCalls, state };
@@ -129,6 +136,9 @@ test('bridge 为 undefined：提示并禁用写入/网络，不建 client、不�
   assert.equal(created, 0, '不创建 client');
   assert.equal(env.fetchCalls.length, 0, '不发起任何网络请求');
   assert.ok(env.controls.every(control => control.disabled), '写入与网络控件全部禁用');
+  assert.equal(env.elements['wallpaper-add'].disabled, true, '无桥时不能添加壁纸');
+  assert.equal(env.elements['wallpaper-clear'].disabled, true, '无桥时不能清空壁纸');
+  assert.equal(env.elements['wallpaper-file'].disabled, true, '无桥时文件选择不可用');
 });
 
 test('桥可用：client 接 bridge.storage、预览 postMessage、fetch 传输', async () => {
@@ -360,4 +370,47 @@ test('Cursor 开窗检查；背屏勾选自动保存，满 4 个时未选项禁�
   await tick();
   assert.deepEqual(calls, ['clear:cursor', 'notify']);
   assert.match(env.elements['global-status'].textContent, /网页登录会话保留/);
+});
+
+test('预览首次带 display.page，之后刷新保留预览自身页且不附整图库', async () => {
+  const bridge = {
+    storage: {
+      get: async key => key === 'display.page' ? '2' : null,
+      set: async () => {},
+      remove: async () => {}
+    },
+    card: { requestRefresh() {} }
+  };
+  const core = {
+    providers: [{ id: 'deepseek', name: 'DeepSeek' }],
+    create: () => ({
+      state: async () => [],
+      cardConfig: () => ({ providers: [{ id: 'deepseek' }], appearance: { images: ['not-sent'] }, pageKey: 'stale' }),
+      refresh: async () => {},
+      saveSecret: async () => {},
+      clear: async () => {},
+      setProviderVisible: async () => {},
+      requestDeviceCode: async () => ({}),
+      completeDeviceLogin: async () => ({}),
+      requestMimoLoginUrl: async () => 'https://account.xiaomi.com/pass/serviceLogin',
+      checkMimoLogin: async () => {},
+      checkCursorLogin: async () => {}
+    })
+  };
+  const env = makeEnvironment({ bridge, core });
+  await tick(8);
+  assert.ok(env.posted.length >= 1, '首帧预览已发出');
+  assert.equal(env.posted[0].config.pageKey, '2');
+  assert.equal(env.posted[0].config.wallpaper, null);
+  assert.equal(env.posted[0].config.appearance, undefined, '预览不带整图库');
+  assert.ok(!JSON.stringify(env.posted[0]).includes('not-sent'));
+  const before = env.posted.length;
+  env.elements['refresh-all'].listeners.click[0]();
+  await tick(8);
+  assert.ok(env.posted.length > before, '刷新后再次同步预览');
+  for (let i = 1; i < env.posted.length; i++) {
+    assert.equal(Object.prototype.hasOwnProperty.call(env.posted[i].config, 'pageKey'), false);
+    assert.equal(env.posted[i].config.wallpaper, null);
+    assert.equal(env.posted[i].config.appearance, undefined);
+  }
 });

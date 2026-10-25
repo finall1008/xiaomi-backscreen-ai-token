@@ -4,7 +4,7 @@
 
 ## 当前模块布局
 
-模块 id 为 `dev.finall.aitoken`，`version` 为 `0.3.0`，`versionCode` 为 `6`，声明 `network` / `storage`。Git 导入读取仓库根目录，手机不执行 npm：
+模块 id 为 `dev.finall.aitoken`，`version` 为 `0.4.1`，`versionCode` 为 `9`，声明 `network` / `storage`。Git 导入读取仓库根目录，手机不执行 npm：
 
 - [module.json](<../module.json>)
 - `card/`：编译后的经典卡片 JS（async/await 已转为生成器）与静态 assets
@@ -34,12 +34,21 @@
 | `auth.mimo` | `{type:'webview'}`：已检查的模块 Profile 会话；兼容旧手动 Cookie 字符串 |
 | `auth.cursor` | `{type:'webview'}`：已检查的 Cursor 官网会话，不保存 Cookie 或管理员密钥 |
 | `display.providers` | JSON 来源 ID 数组，最多四个；空数组表示全部隐藏 |
+| `display.page` | `minimal` / `overview` / `provider:<id>`，稳定页标识，不用数组下标 |
+| `display.wallpapers` | `{revision, images:[id...]}`，小体积图库目录；清空也写入新版本 |
+| `wallpaper.<id>` | `{id,name,sharp,blur,width,height}`，两份 JPEG Data URL；逐张读写，避免多个大值进入同一 HostVar 批次 |
 | `usage.<id>` | 归一化用量快照，见下方 |
 | `status.<id>` | 查询 / 授权错误状态，不含原始服务端响应或凭据 |
 
 归一化用量快照字段为 `id`、`plan`、`updatedAt`（Unix 秒）、`windows`、`balance`、`credits`、`booster`、`hint`。字段不可用时不伪造为 0。Cursor 另有 `details` 安全文字数组，显示美元消费及缺少个人上限的提示，不含原始响应。
 
-卡片的同步常显快照为 `{schemaVersion:1, config:{providers, updatedAt, emptyMessage}}`，仅含展示数据，不包含 auth 或错误响应。静态 logo 保持包内 PNG。
+卡片的同步常显快照为 `{schemaVersion:1, config:{providers, updatedAt, emptyMessage}, page?, appearance?:{revision,images:[完整图片...]}, wallpaperId?}`，仅含展示数据，不包含 auth 或错误响应；兼容旧版没有壁纸和页码的 v1 快照。静态 logo 保持包内 PNG。
+
+壁纸与页码由 [共享展示逻辑](<../src/shared/appearance.js>) 合并保存，设置页与后台更新用量时不得覆盖掉这些字段。图库总量按真实的完整快照 JSON 检查 800×1024 字符，不另设图库张数限制。单张清晰图不超过 180K、模糊图不超过 30K，低于 storage 单值 256K 限制；设置页先检查完整快照，再写图库和快照，超限保留原图库。
+
+[启动入口](<../src/card/bootstrap.js>) 在渲染器执行前同步读取完整快照、选择下一张、恢复页码并写回选择结果。首帧图像源直接使用快照里的 Data URL，不依赖异步 storage、文件 URL 或网络解码。原生图片在赋值时 `complete=true` 且尺寸有效，就立即纳入绘制：模拟器实测 Data URL 已同步解码，但 `onload` 排在第一帧之后，仅等待回调会漏掉首帧壁纸。异步加载图库仅用于接收设置变更，同次运行刷新数据不推进轮换。翻页即保存稳定页标识；来源被移除导致页码失效时回到现有默认页。
+
+宿主文件选择器需识别 `FileChooserParams.MODE_OPEN_MULTIPLE` 并返回全部 URI，单选协议不变。
 
 ## MiMo 网页登录与查询
 
@@ -65,7 +74,7 @@
 
 1. 读取已配置来源；每次宿主调用均查询，不使用模块自己的缓存年龄门槛。
 2. 来源并行查询，单来源失败由核心保存安全状态、保留成功缓存，其他来源继续。
-3. 调用与背屏相同的 `cardConfig()`，形成 `{schemaVersion:1,config}`，**await `bridge.card.saveSnapshot()`** 后才结束；部分来源失败在保存后用固定文案报告，宿主等下个周期，不立即重试。
+3. 调用与背屏相同的 `cardConfig()`，与已有快照合并，保留图库、壁纸选择及页码，**await `bridge.card.saveSnapshot()`** 后才结束；部分来源失败在保存后用固定文案报告，宿主等下个周期，不立即重试。
 
 后台使用 `bridge.net.request`，MiMo 复用相同 Profile。后台 Codex 不轮换 refresh token，401 时需打开设置页刷新登录；桥的任务串行并不包含用户在设置页的操作，当前没有跨环境令牌轮换锁，故继续由设置页独占续期。
 

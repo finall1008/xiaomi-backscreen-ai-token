@@ -1,7 +1,9 @@
 (function () {
   'use strict';
-  if (typeof bridge === 'undefined' || !window.AiUsageCore || !window.AiUsageCard) return;
+  if (typeof bridge === 'undefined' || !window.AiUsageCore || !window.AiUsageCard || !window.AiUsageAppearance) return;
 
+  var appearance = window.AiUsageAppearance;
+  var card = window.AiUsageCard;
   var client = window.AiUsageCore.create({
     storage: bridge.storage,
     request: function (options) { return bridge.net.request(options); },
@@ -9,19 +11,45 @@
     allowTokenRefresh: false
   });
   var refreshing = false, reloadPending = false, loading = null;
-  var displayed = JSON.stringify(window.CARD_CONFIG);
+  var current = window.CARD_SNAPSHOT || { schemaVersion: 1, config: { providers: [] } };
+  var displayed = JSON.stringify(current.config);
+  var pageRevision = 0;
+
+  function publish() {
+    if (!bridge.card.saveSnapshot) return;
+    try {
+      var saved = bridge.card.saveSnapshot(current);
+      if (saved && typeof saved.catch === 'function') saved.catch(function () {});
+    } catch (_) { /* 保存失败不清除当前画面。 */ }
+  }
+
+  async function readAppearance() {
+    var raw = await bridge.storage.get(appearance.KEY);
+    if (typeof raw === 'string') {
+      try { raw = JSON.parse(raw); } catch (_) { return false; }
+    }
+    // 无旧图库记录不是一次“清空”；用户清空会写入新的空目录版本。
+    if (!raw || raw.revision === appearance.normalize(current.appearance).revision) return false;
+    var next = await appearance.read(bridge.storage);
+    current = appearance.buildSnapshot(current.config, current, next);
+    var selected = next.images[0] || null;
+    if (selected) current.wallpaperId = selected.id;
+    else delete current.wallpaperId;
+    card.setWallpaper(selected);
+    return true;
+  }
 
   async function display() {
     var config = await client.cardConfig();
     config.emptyMessage = '请在卡片桥的模块设置中添加来源';
+    var changedAppearance = await readAppearance();
     var serialized = JSON.stringify(config);
-    if (serialized === displayed) return;
+    if (serialized === displayed && !changedAppearance) return;
     displayed = serialized;
-    window.AiUsageCard.update(config, function () {
-      if (bridge.card.saveSnapshot) {
-        var saved = bridge.card.saveSnapshot({ schemaVersion: 1, config: config });
-        if (saved && typeof saved.catch === 'function') saved.catch(function () {});
-      }
+    current = appearance.buildSnapshot(config, current);
+    card.update(config, function () {
+      current.page = card.getState().pageKey;
+      publish();
     });
   }
 
@@ -39,13 +67,32 @@
     return loading;
   }
 
-  window.AiUsageCard.onRefresh(async function (providerId) {
+  card.onPageChange(function (pageKey) {
+    pageRevision++;
+    current.page = pageKey;
+    // 先同步保存本地快照，翻页后立即息屏也能恢复目标页。
+    publish();
+    var saved = bridge.storage.set(appearance.PAGE_KEY, pageKey);
+    if (saved && typeof saved.catch === 'function') saved.catch(function () {});
+  });
+
+  if (!current.page) {
+    var initialRevision = pageRevision;
+    bridge.storage.get(appearance.PAGE_KEY).then(function (pageKey) {
+      if (pageRevision !== initialRevision || typeof pageKey !== 'string') return;
+      card.restorePage(pageKey);
+      current.page = card.getState().pageKey;
+      publish();
+    }).catch(function () {});
+  }
+
+  card.onRefresh(async function (providerId) {
     if (loading) await loading;
     refreshing = true;
     var failed = false;
     try {
       var rows = await client.state();
-      // 手动刷新不受缓存年龄限制；首页刷新全部，详情只刷新当前来源。
+      // 简洁页/总览刷新全部，详情只刷新当前来源。
       await Promise.all(rows.map(async function (row) {
         if (!row.configured || (providerId && row.id !== providerId)) return;
         try { await client.refresh(row.id); }
@@ -59,7 +106,7 @@
     }
   });
 
-  // 周期取数由宿主统一调度；启动及缓存通知只重读共享展示数据。
+  // 周期取数由宿主调度。重读数据和图库不推进本次点亮的壁纸。
   bridge.card.onRefresh(load);
   load();
 })();

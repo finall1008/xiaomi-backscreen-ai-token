@@ -16,8 +16,24 @@ const snapshot = amount => ({ id: 'deepseek', updatedAt: Math.floor(Date.now() /
 
 function card(cached, { stale = false, failNetwork = false, respond, initialSnapshot } = {}) {
   const frames = [], texts = [], listeners = {}, handlers = {}, timers = [], saved = [];
-  let recording = false, requestCount = 0, promises = 0, release;
+  let recording = false, requestCount = 0, promises = 0, release, now = 1000;
+  let sharedSnapshot = initialSnapshot || ({ schemaVersion: 1, config: { providers: [
+    { ...snapshot(9), name: 'DeepSeek', logoAsset: 'assets/deepseek.png' }
+  ] } });
+  const imageSources = [], drawn = [];
   const gate = new Promise(resolve => { release = resolve; });
+  class Clock extends Date { static now() { return now; } }
+  class CardImage {
+    set src(value) {
+      this.source = value; imageSources.push(value);
+      // 原生 Data URL 同步可用，onload 排在首帧之后；首帧必须检查 complete 和尺寸。
+      this.complete = value.startsWith('data:image/');
+      this.width = this.complete ? 912 : 0;
+      this.height = this.complete ? 596 : 0;
+      if (!this.complete && this.onload) this.onload();
+    }
+    get src() { return this.source; }
+  }
   const data = { 'auth.deepseek': 'test-key-not-a-real-credential',
     'usage.deepseek': { ...cached, updatedAt: stale ? 1 : cached.updatedAt } };
   class BridgePromise extends Promise {
@@ -28,7 +44,8 @@ function card(cached, { stale = false, failNetwork = false, respond, initialSnap
   const ctx = new Proxy({
     createLinearGradient: () => ({ addColorStop() {} }),
     measureText: value => ({ width: String(value).length * 12 }),
-    fillRect() { assert.ok(recording); texts.length = 0; },
+    fillRect() { assert.ok(recording); },
+    drawImage(image) { assert.ok(recording); drawn.push(image.source); },
     fillText(value) { assert.ok(recording); texts.push(String(value)); }
   }, { get: (target, key) => target[key] || (() => {}) });
   const canvas = { getContext: () => ctx, addEventListener: (type, fn) => { handlers[type] = fn; },
@@ -36,9 +53,9 @@ function card(cached, { stale = false, failNetwork = false, respond, initialSnap
   const bridge = {
     storage: { get: async key => { await gate; return data[key] ?? null; }, set: async (key, value) => { data[key] = value; },
       remove: async key => { delete data[key]; } },
-    card: { readSnapshot: () => initialSnapshot || ({ schemaVersion: 1, config: { providers: [
-      { ...snapshot(9), name: 'DeepSeek', logoAsset: 'assets/deepseek.png' }
-    ] } }), saveSnapshot: value => saved.push(value), onRefresh: fn => { listeners.refresh = fn; } },
+    card: { readSnapshot: () => sharedSnapshot,
+      saveSnapshot: value => { sharedSnapshot = JSON.parse(JSON.stringify(value)); saved.push(sharedSnapshot); },
+      onRefresh: fn => { listeners.refresh = fn; } },
     net: { request: async options => {
       requestCount++;
       if (respond) return respond(options);
@@ -47,16 +64,20 @@ function card(cached, { stale = false, failNetwork = false, respond, initialSnap
     } }
   };
   const sandbox = { bridge, Promise: BridgePromise, document: { getElementById: () => canvas, addEventListener() {} },
-    Image: function () {}, setInterval: fn => { timers.push(fn); },
+    Image: CardImage, Date: Clock, setInterval: fn => { timers.push(fn); },
     setTimeout, clearTimeout, requestAnimationFrame: fn => frames.push(fn) };
   sandbox.window = sandbox;
   const context = vm.createContext(sandbox);
-  for (const name of ['bootstrap.js', 'renderer.js', 'core.js', 'main.js']) {
+  for (const name of ['appearance.js', 'bootstrap.js', 'renderer.js', 'core.js', 'main.js']) {
     vm.runInContext(text('card/' + name), context, { filename: name });
   }
-  function flush() {
+  function flush(advance = 500) {
+    now += advance;
+    if (!frames.length) return;
+    texts.length = 0;
+    drawn.length = 0;
     recording = true;
-    try { frames.splice(0).forEach(fn => fn()); } finally { recording = false; }
+    try { frames.splice(0).forEach(fn => fn(now)); } finally { recording = false; }
   }
   function swipe(x,y,toX,toY) {
     for (const [type,cx,cy] of [['pointerdown',x,y],['pointermove',toX,toY],['pointerup',toX,toY]]) {
@@ -64,7 +85,8 @@ function card(cached, { stale = false, failNetwork = false, respond, initialSnap
     }
     flush();
   }
-  return { data, saved, listeners, timers, texts, release, flush, swipe,
+  return { data, saved, listeners, timers, texts, release, flush, swipe, imageSources, drawn,
+    controller: sandbox.AiUsageCard,
     pull: () => swipe(450,150,450,280),
     requests: () => requestCount, promises: () => promises };
 }
@@ -78,7 +100,7 @@ test('ZIP contains an API v2 module, static logos and compiled classic card scri
   assert.ok(text('background/main.js').includes('window.AiUsageCore ='), 'background entry is self-contained');
   assert.ok(!text('background/main.js').includes('getContext('), 'background does not draw Canvas');
   const scripts = [...text('webroot/index.html').matchAll(/<script src="([^"]+)"/g)].map(match => match[1]);
-  assert.deepEqual(scripts, ['bridge-shim.js', 'core.js', 'main.js']);
+  assert.deepEqual(scripts, ['bridge-shim.js', 'core.js', 'appearance.js', 'wallpapers.js', 'main.js']);
   for (const id of ['openai', 'kimi', 'deepseek', 'mimo', 'cursor']) {
     assert.deepEqual(Buffer.from(entries[`card/assets/${id}.png`]), fs.readFileSync(`prototype/assets/${id}.png`));
   }
@@ -296,4 +318,47 @@ test('compiled home pull refreshes all configured providers while detail pull re
   runtime.pull(); await tick(); runtime.flush();
   assert.equal(urls.length,3);
   assert.ok(urls.at(-1).includes('chatgpt.com'));
+});
+
+test('compiled AOD first frame restores the page and advances an already cached wallpaper before storage responds', async () => {
+  const images = ['one', 'two'].map((id, index) => ({ id, name: id,
+    sharp: 'data:image/jpeg;base64,' + (index ? 'AQ==' : 'AA=='),
+    blur: 'data:image/jpeg;base64,Ag==', width: 912, height: 596 }));
+  const initial = { schemaVersion: 1, config: { providers: [
+    { id: 'deepseek', name: 'DeepSeek', windows: [], balance: { amount: 9, currency: 'CNY' } }
+  ] }, page: 'minimal', appearance: { revision: 1, images }, wallpaperId: 'one' };
+  const runtime = card(snapshot(42), { initialSnapshot: initial });
+  runtime.flush();
+  assert.equal(runtime.controller.getState().pageKey, 'minimal');
+  assert.ok(runtime.drawn.includes(images[1].sharp));
+  assert.equal(runtime.saved.at(-1).wallpaperId, 'two');
+  assert.equal(runtime.requests(), 0);
+  runtime.release(); await tick(); runtime.flush();
+  assert.equal(runtime.controller.getState().pageKey, 'minimal');
+  assert.equal(runtime.saved.at(-1).wallpaperId, 'two', 'async usage reload must not advance wallpaper again');
+  runtime.controller.restorePage('provider:deepseek');
+  runtime.flush();
+  runtime.swipe(700, 200, 850, 200); // detail -> minimal
+  assert.equal(runtime.data['display.page'], 'minimal');
+  assert.equal(runtime.saved.at(-1).page, 'minimal');
+});
+
+test('background refresh preserves cached wallpapers and the persisted navigation page', async () => {
+  const picture = { id: 'one', sharp: 'data:image/jpeg;base64,AA==', blur: 'data:image/jpeg;base64,AQ==' };
+  let shared = { schemaVersion: 1, config: { providers: [] }, page: 'overview',
+    appearance: { revision: 1, images: [picture] }, wallpaperId: 'one' };
+  const data = { 'auth.deepseek': 'test-key', 'usage.deepseek': snapshot(7), 'display.page': 'minimal' };
+  const context = vm.createContext({ bridge: {
+    storage: { get: async key => data[key] ?? null, set: async (key, value) => { data[key] = value; }, remove: async key => { delete data[key]; } },
+    net: { request: async () => ({ status: 200, body: JSON.stringify({ is_available: true,
+      balance_infos: [{ currency: 'CNY', total_balance: '8' }] }) }) },
+    card: { readSnapshot: () => shared, saveSnapshot: async value => { shared = value; } }
+  } });
+  context.window = context;
+  vm.runInContext(text('background/main.js'), context);
+  await context.refresh();
+  assert.equal(shared.page, 'minimal');
+  assert.equal(shared.wallpaperId, 'one');
+  assert.equal(shared.appearance.images[0].sharp, picture.sharp);
+  assert.equal(shared.config.providers[0].balance.amount, 8);
 });

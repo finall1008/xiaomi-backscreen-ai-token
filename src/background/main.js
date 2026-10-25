@@ -18,6 +18,9 @@ async function refresh() {
   var config = await client.cardConfig();
   config.emptyMessage = '请在卡片桥的模块设置中添加来源';
   // 后台保存是异步的，必须等桥确认完成，不能保存后即结束任务。
-  await bridge.card.saveSnapshot({ schemaVersion: 1, config: config });
+  var previous = bridge.card.readSnapshot ? bridge.card.readSnapshot() : null;
+  var page = await bridge.storage.get(window.AiUsageAppearance.PAGE_KEY);
+  if (typeof page === 'string') previous = Object.assign({}, previous || {}, { page: page });
+  await bridge.card.saveSnapshot(window.AiUsageAppearance.buildSnapshot(config, previous));
   if (failed) throw new Error('部分来源后台刷新失败，请在模块设置中查看状态');
 }

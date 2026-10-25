@@ -2,7 +2,8 @@
  * AI 用量背屏 · 模块设置页（webroot/main.js）。
  *
  * 脚本顺序：bridge-shim.js（宿主注入，定义 window.bridge）→ core.js（构建复制，
- * 定义 window.AiUsageCore）→ 本文件。bridge 为 undefined（普通网页打开）时只提示
+ * 定义 window.AiUsageCore）→ appearance.js（构建复制，定义 window.AiUsageAppearance）→
+ * wallpapers.js（定义 window.AiUsageWallpaperSettings）→ 本文件。bridge 为 undefined（普通网页打开）时只提示
  * 「请在卡片桥内打开模块设置」并禁用写入与网络操作：不伪造桥、不回退浏览器本地存储、
  * 不发送任何真实请求，也不演示数据。
  *
@@ -30,6 +31,10 @@
   var rowErrors = {};
   var busy = false;
   var previewReady = false;
+  var currentWallpaper = null;
+  var previewPageReady = false;
+  var previewPageSeed = null;
+  var previewPageSent = false;
   var device = null;
 
   var dom = {};
@@ -744,8 +749,67 @@
 
   /* ---------- 卡片预览联动 ---------- */
 
+  /** display.page 可能是字符串、数字或 JSON 字符串；空值不写入预览。 */
+  function pageSeed(value) {
+    if (typeof value === 'number' && isFinite(value)) return String(value);
+    if (typeof value !== 'string') return null;
+    var text = value;
+    if (text.charAt(0) === '"') {
+      try {
+        var parsed = JSON.parse(text);
+        if (typeof parsed === 'string') text = parsed;
+        else if (typeof parsed === 'number' && isFinite(parsed)) return String(parsed);
+      } catch (_) { /* 使用原字符串。 */ }
+    }
+    return text ? text : null;
+  }
+
+  function previewWallpaper(value) {
+    if (!value || typeof value !== 'object') return null;
+    if (typeof value.id !== 'string' || typeof value.sharp !== 'string' || typeof value.blur !== 'string') return null;
+    return { id: value.id, sharp: value.sharp, blur: value.blur };
+  }
+
+  /**
+   * mount({ bridge, client, onChange })
+   * onChange(null | {id, sharp, blur}) 只描述当前选中的一张，不包含整图库。
+   */
+  function mountWallpapers() {
+    var api = window.AiUsageWallpaperSettings;
+    if (!api || typeof api.mount !== 'function') return;
+    try {
+      api.mount({
+        bridge: bridge,
+        client: client,
+        onChange: function (wallpaper) {
+          currentWallpaper = previewWallpaper(wallpaper);
+          sendPreview();
+        }
+      });
+    } catch (_) { /* 外观区域不可用时保留其余设置。 */ }
+  }
+
+  function readPreviewPage() {
+    var lib = window.AiUsageAppearance;
+    var key = lib && lib.PAGE_KEY ? lib.PAGE_KEY : 'display.page';
+    var pending = null;
+    try {
+      if (bridge.storage && bridge.storage.get) pending = bridge.storage.get(key);
+    } catch (_) {
+      pending = null;
+    }
+    Promise.resolve(pending).then(function (value) {
+      previewPageSeed = pageSeed(value);
+    }, function () {
+      previewPageSeed = null;
+    }).then(function () {
+      previewPageReady = true;
+      sendPreview();
+    });
+  }
+
   function sendPreview() {
-    if (!previewReady || !client) return;
+    if (!previewReady || !client || !previewPageReady) return;
     var config;
     try {
       config = client.cardConfig();
@@ -754,13 +818,27 @@
     }
     Promise.resolve(config).then(function (value) {
       if (!value || !Array.isArray(value.providers)) return;
-      if (!value.emptyMessage) {
-        value = Object.assign({}, value, { emptyMessage: '请在模块设置中添加来源' });
+      var next = {};
+      var keys = Object.keys(value);
+      for (var i = 0; i < keys.length; i++) {
+        if (keys[i] === 'wallpaper' || keys[i] === 'appearance' || keys[i] === 'pageKey') continue;
+        next[keys[i]] = value[keys[i]];
       }
-      // 预览消息只含展示数据（core 保证不含凭据）。
-      window.CARD_CONFIG = value;
+      if (!next.emptyMessage) next.emptyMessage = '请在模块设置中添加来源';
+      next.wallpaper = currentWallpaper ? {
+        id: currentWallpaper.id,
+        sharp: currentWallpaper.sharp,
+        blur: currentWallpaper.blur
+      } : null;
+      // 首次用 display.page 初始化；之后不再带 pageKey，预览保留自己的当前页。
+      if (!previewPageSent) {
+        if (typeof previewPageSeed === 'string') next.pageKey = previewPageSeed;
+        previewPageSent = true;
+      }
+      // 预览消息只含展示数据（core 保证不含凭据），且只附当前一张壁纸。
+      window.CARD_CONFIG = next;
       try {
-        dom.preview.contentWindow.postMessage({ type: 'ai-usage-preview', config: value }, '*');
+        dom.preview.contentWindow.postMessage({ type: 'ai-usage-preview', config: next }, '*');
       } catch (_) { /* iframe 尚未就绪时忽略，下次状态变化会重发。 */ }
     });
   }
@@ -827,6 +905,8 @@
       return;
     }
 
+    mountWallpapers();
+    readPreviewPage();
     dom.refreshAll.addEventListener('click', function () { refreshAll(); });
     // 离开页面才取消：切到外部验证浏览器不算离开（链接由系统浏览器打开，本页保持不变）。
     window.addEventListener('pagehide', function () { cancelDeviceSession(''); });

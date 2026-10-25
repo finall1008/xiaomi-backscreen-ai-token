@@ -22,11 +22,13 @@ export async function moduleEntries() {
   await collect('src/card', 'card', entries);
   await collect('src/webui', 'webroot', entries);
   const core = await read('src/shared/core.js');
+  const appearance = await read('src/shared/appearance.js');
   const renderer = await read('prototype/main.js');
   // 后台宿主只加载这一份入口，不解析 HTML；WebView 保持原生 async/await。
-  entries['background/main.js'] = Buffer.concat([core, Buffer.from('\n'), await read('src/background/main.js')]);
+  entries['background/main.js'] = Buffer.concat([core, Buffer.from('\n'), appearance, Buffer.from('\n'), await read('src/background/main.js')]);
   for (const target of ['card', 'webroot']) {
     entries[`${target}/core.js`] = core;
+    entries[`${target}/appearance.js`] = appearance;
     entries[`${target}/renderer.js`] = renderer;
     await collect('prototype/assets', `${target}/assets`, entries);
     // SVG 来源文件不是卡片运行资源，实际显示继续使用静态 PNG。

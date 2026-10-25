@@ -5,9 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="color-scheme" content="light dark">
   <title>AI 用量背屏 · 模块设置</title>
-  <!-- 第一个脚本必须是宿主注入的桥接；core.js 由构建复制；main.js 在两者之后执行。 -->
+  <!-- 第一个脚本必须是宿主注入的桥接；core.js 与 appearance.js 由构建复制；wallpapers.js 与 main.js 在其后执行。 -->
   <script src="bridge-shim.js"></script>
   <script src="core.js" defer></script>
+  <script src="appearance.js" defer></script>
+  <script src="wallpapers.js" defer></script>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -26,6 +28,22 @@
         <iframe id="preview" src="preview.html" title="背屏卡片预览"></iframe>
       </div>
       <p class="muted">预览与背屏使用同一套渲染脚本；刷新用量后自动同步。</p>
+    </section>
+
+    <section class="card" id="wallpaper-card">
+      <div class="card-head">
+        <h2>卡片外观</h2>
+        <div class="actions wallpaper-actions">
+          <button id="wallpaper-add" type="button" class="btn btn-primary">添加图片</button>
+          <button id="wallpaper-clear" type="button" class="btn btn-danger">恢复默认</button>
+        </div>
+      </div>
+      <p class="muted">图片只保存在本机，不上传。已添加的图片按加入顺序参与每次点亮轮换；清空后恢复默认背景。</p>
+      <input id="wallpaper-file" type="file" accept="image/jpeg,image/png,image/webp" multiple hidden>
+      <div id="wallpaper-list" class="wallpaper-list"></div>
+      <p id="wallpaper-empty" class="muted">当前使用默认背景。</p>
+      <p id="wallpaper-status" class="status" role="status"></p>
+      <div id="wallpaper-error" class="banner banner-error" role="alert" hidden></div>
     </section>
 
     <section class="card">
