@@ -21,7 +21,10 @@
     PULL_MS = 200,
     PULL_THRESHOLD = 80,
     SWIPE_DISTANCE = 60;
-  var HEADER_PAD = 22;
+  // 与 HoyoLab 相同的右上角安全边界；顶部不能沿用下方内容面板的右边缘。
+  var HEADER_R = 838,
+    HEADER_W = HEADER_R - L,
+    HEADER_PAD = 22;
   var MINIMAL_Y = 30,
     MINIMAL_LOGO = 34,
     MINIMAL_TEXT_GAP = 10;
@@ -457,7 +460,7 @@
     if (known) progressBar(r.x + pad, r.y + r.h - 36, r.w - pad * 2, 10, pct, color);
   }
   function drawHome(active) {
-    headerGlass(L, 20, CW, 84);
+    headerGlass(L, 20, HEADER_W, 84);
     ctx.textBaseline = 'middle';
     ctx.textAlign = 'left';
     ctx.fillStyle = C.text;
@@ -468,12 +471,12 @@
     var hint = refreshHint() || providers.length + ' 个来源' + (cfg.updatedAt ? ' · 更新于 ' + fmtClock(cfg.updatedAt) : '');
     ctx.fillText(hint, L + HEADER_PAD, 91);
     if (active && refreshing) paintSpinner(L + HEADER_PAD + ctx.measureText(hint).width + 22, 91, 8);
-    badge(R - HEADER_PAD, 62, '总览');
+    badge(HEADER_R - HEADER_PAD, 62, '总览');
     for (var i = 0; i < providers.length; i++) drawHomeCell(providers[i], i);
   }
   function minimalLayout() {
     var items = [];
-    var slotWidth = (CW - HEADER_PAD * 2) / providers.length;
+    var slotWidth = (HEADER_W - HEADER_PAD * 2) / providers.length;
     ctx.font = '600 24px sans-serif';
     var i;
     for (i = 0; i < providers.length; i++) {
@@ -496,7 +499,7 @@
   }
   function drawMinimal(active) {
     var items = minimalLayout();
-    if (items.length) headerGlass(L, 16, CW, 56);
+    if (items.length) headerGlass(L, 16, HEADER_W, 56);
     var i;
     for (i = 0; i < items.length; i++) {
       var it = items[i];
@@ -523,7 +526,7 @@
 
   // ---------- 详情页 ----------
   function drawDetailHeader(p, active) {
-    headerGlass(L, 20, CW, 84);
+    headerGlass(L, 20, HEADER_W, 84);
     brandMark(p, L + HEADER_PAD, 42, 40);
     ctx.textBaseline = 'middle';
     ctx.textAlign = 'left';
@@ -535,7 +538,7 @@
     var hint = refreshHint() || '套餐用量' + (p.updatedAt || cfg.updatedAt ? ' · 更新于 ' + fmtClock(p.updatedAt || cfg.updatedAt) : '');
     ctx.fillText(hint, L + HEADER_PAD + 52, 91);
     if (active && refreshing) paintSpinner(L + HEADER_PAD + 52 + ctx.measureText(hint).width + 20, 91, 8);
-    badge(R - HEADER_PAD, 62, (p.plan || '未知套餐').toUpperCase());
+    badge(HEADER_R - HEADER_PAD, 62, (p.plan || '未知套餐').toUpperCase());
   }
   function usagePanel(y, h, title, win) {
     var known = win && typeof win.usedPercent === 'number';

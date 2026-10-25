@@ -14,7 +14,7 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
 const snapshot = amount => ({ id: 'deepseek', updatedAt: Math.floor(Date.now() / 1000),
   windows: [], balance: { amount, currency: 'CNY', isAvailable: true } });
 
-function card(cached, { stale = false, failNetwork = false, respond, initialSnapshot } = {}) {
+function card(cached, { stale = false, failNetwork = false, respond, initialSnapshot, localValues = new Map() } = {}) {
   const frames = [], texts = [], listeners = {}, handlers = {}, timers = [], saved = [];
   let recording = false, requestCount = 0, promises = 0, release, now = 1000;
   let sharedSnapshot = initialSnapshot || ({ schemaVersion: 1, config: { providers: [
@@ -63,7 +63,11 @@ function card(cached, { stale = false, failNetwork = false, respond, initialSnap
         body: JSON.stringify({ is_available: true, balance_infos: [{ currency: 'CNY', total_balance: '43' }] }) };
     } }
   };
-  const sandbox = { bridge, Promise: BridgePromise, document: { getElementById: () => canvas, addEventListener() {} },
+  const documentEvents = {};
+  const document = { hidden: false, visibilityState: 'visible', getElementById: () => canvas,
+    addEventListener: (type, fn) => { documentEvents[type] = fn; } };
+  const sandbox = { bridge, Promise: BridgePromise, document,
+    localStorage: { getItem: key => localValues.get(key) ?? null, setItem: (key, value) => localValues.set(key, value) },
     Image: CardImage, Date: Clock, setInterval: fn => { timers.push(fn); },
     setTimeout, clearTimeout, requestAnimationFrame: fn => frames.push(fn) };
   sandbox.window = sandbox;
@@ -86,7 +90,11 @@ function card(cached, { stale = false, failNetwork = false, respond, initialSnap
     flush();
   }
   return { data, saved, listeners, timers, texts, release, flush, swipe, imageSources, drawn,
-    controller: sandbox.AiUsageCard,
+    controller: sandbox.AiUsageCard, localValues,
+    visibility(hidden) {
+      document.hidden = hidden; document.visibilityState = hidden ? 'hidden' : 'visible';
+      documentEvents.visibilitychange();
+    },
     pull: () => swipe(450,150,450,280),
     requests: () => requestCount, promises: () => promises };
 }
@@ -341,6 +349,69 @@ test('compiled AOD first frame restores the page and advances an already cached 
   runtime.swipe(700, 200, 850, 200); // detail -> minimal
   assert.equal(runtime.data['display.page'], 'minimal');
   assert.equal(runtime.saved.at(-1).page, 'minimal');
+});
+
+test('native visibility recovery redraws the same page and rotates once without rebuilding JS', async () => {
+  const images = ['one', 'two'].map((id, i) => ({ id,
+    sharp: 'data:image/jpeg;base64,' + (i ? 'AQ==' : 'AA=='), blur: 'data:image/jpeg;base64,Ag==' }));
+  const initial = { schemaVersion: 1, config: { providers: [snapshot(9)] },
+    page: 'minimal', appearance: { revision: 1, images }, wallpaperId: 'two' };
+  const runtime = card(snapshot(42), { initialSnapshot: initial });
+  runtime.flush();
+  assert.ok(runtime.drawn.includes(images[0].sharp));
+  const initialSaves = runtime.saved.length;
+  runtime.visibility(false);
+  assert.equal(runtime.saved.length, initialSaves, 'native initial visible notification does not rotate twice');
+  runtime.visibility(true);
+  runtime.visibility(false); // AOD EXIT can arrive while the physical display is still OFF.
+  const beforeFramesResume = runtime.saved.at(-1).wallpaperId;
+  assert.equal(beforeFramesResume, 'one', 'visibility alone must not rotate before native frames resume');
+  runtime.flush(3000);
+  runtime.flush(33);
+  assert.equal(runtime.controller.getState().pageKey, 'minimal');
+  assert.ok(runtime.drawn.includes(images[1].sharp), 'first recovery frame has the next wallpaper');
+  const saves = runtime.saved.length;
+  runtime.visibility(false);
+  assert.equal(runtime.saved.length, saves, 'duplicate visible notifications do not rotate');
+  runtime.release(); await tick(); runtime.flush();
+  assert.equal(runtime.saved.at(-1).wallpaperId, 'two', 'cache reload does not rotate');
+});
+
+test('native full OFF resumes the unchanged runtime without a visibility event', () => {
+  const images = ['one', 'two'].map((id, i) => ({ id,
+    sharp: 'data:image/jpeg;base64,' + (i ? 'AQ==' : 'AA=='), blur: 'data:image/jpeg;base64,Ag==' }));
+  const runtime = card(snapshot(42), { initialSnapshot: { schemaVersion: 1,
+    config: { providers: [snapshot(9)] }, page: 'minimal',
+    appearance: { revision: 1, images }, wallpaperId: 'two' } });
+  runtime.flush();
+  const saves = runtime.saved.length;
+  runtime.flush(33);
+  assert.equal(runtime.saved.length, saves, 'ordinary frames neither draw nor write snapshots');
+  runtime.flush(3000); // Native display gate stops all RAF callbacks while OFF.
+  runtime.flush(33);
+  assert.equal(runtime.controller.getState().pageKey, 'minimal');
+  assert.ok(runtime.drawn.includes(images[1].sharp));
+  assert.equal(runtime.saved.at(-1).wallpaperId, 'two');
+  const resumedSaves = runtime.saved.length;
+  runtime.visibility(false);
+  runtime.flush(33);
+  assert.equal(runtime.saved.length, resumedSaves, 'a delayed visible event does not rotate again');
+});
+
+test('immediate sleep and JS rebuild retain local page and rotation position over a stale shared snapshot', async () => {
+  const images = ['one', 'two'].map((id, i) => ({ id,
+    sharp: 'data:image/jpeg;base64,' + (i ? 'AQ==' : 'AA=='), blur: 'data:image/jpeg;base64,Ag==' }));
+  const stale = { schemaVersion: 1, config: { providers: [snapshot(9)] },
+    page: 'provider:deepseek', appearance: { revision: 1, images }, wallpaperId: 'two' };
+  const first = card(snapshot(42), { initialSnapshot: stale });
+  first.flush();
+  first.swipe(500, 200, 800, 200);
+  assert.equal(first.controller.getState().pageKey, 'minimal');
+  const rebuilt = card(snapshot(42), { initialSnapshot: stale, localValues: first.localValues });
+  rebuilt.flush();
+  assert.equal(rebuilt.controller.getState().pageKey, 'minimal');
+  assert.ok(rebuilt.drawn.includes(images[1].sharp), 'rotation advances from the last local selection');
+  first.release(); rebuilt.release(); await tick(); first.flush(); rebuilt.flush();
 });
 
 test('background refresh preserves cached wallpapers and the persisted navigation page', async () => {

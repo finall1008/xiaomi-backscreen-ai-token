@@ -12,9 +12,12 @@
   var wallpaper = null;
   if (window.AiUsageAppearance) {
     try {
+      var local = typeof localStorage === 'undefined' ? null : localStorage;
+      snapshot = window.AiUsageAppearance.restoreLocal(local, snapshot);
       var restored = window.AiUsageAppearance.advance(snapshot);
       snapshot = restored.snapshot;
       wallpaper = restored.wallpaper;
+      window.AiUsageAppearance.saveLocal(local, snapshot);
     } catch (_) { /* 旧数据不可用时仍绘制用量，不等待异步桥。 */ }
   }
   var config = {};

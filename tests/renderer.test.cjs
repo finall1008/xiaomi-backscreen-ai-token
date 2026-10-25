@@ -106,7 +106,7 @@ function createCard(config, frameOnly = true) {
   };
 }
 
-test('headers share panel edges and minimal services use evenly spaced columns', () => {
+test('headers share the top-corner safe edge and minimal services use evenly spaced columns', () => {
   const rows = ['codex', 'kimi', 'mimo', 'cursor'].map(id => ({
     id, name: id, windows: [win('用量', 18000)]
   }));
@@ -117,13 +117,15 @@ test('headers share panel edges and minimal services use evenly spaced columns',
     view.card.restorePage(page);
     view.flushFrame();
     const top = page === 'minimal' ? 16 : 20;
-    assert.equal(view.arcs()[0][0], 876, page + ' right edge matches panels');
+    assert.equal(view.arcs()[0][0], 838, page + ' stops before the physical rounded corner');
+    // Native rear display: 912×596, top-right corner radius 106 (center 806,106).
+    assert.ok(Math.pow(838 - 806, 2) + Math.pow(top - 106, 2) < 106 * 106);
     assert.equal(view.arcs()[0][1], top);
     assert.equal(view.arcs()[3][0], 336, page + ' left edge matches panels');
   }
   const labels = view.text().filter(entry => entry.value === '12%');
   assert.equal(labels.length, 4);
-  for (let i = 1; i < labels.length; i++) assert.equal(labels[i].x - labels[i - 1].x, 124);
+  for (let i = 1; i < labels.length; i++) assert.equal(labels[i].x - labels[i - 1].x, 114.5);
 });
 
 function listen(view) {

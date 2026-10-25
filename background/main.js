@@ -1841,6 +1841,7 @@
   'use strict';
   var KEY = 'display.wallpapers';
   var PAGE_KEY = 'display.page';
+  var LOCAL_KEY = 'aiUsage.presentation';
   var MAX_SNAPSHOT_CHARS = 800 * 1024;
   var JPEG = /^data:image\/jpeg;base64,[A-Za-z0-9+/]+=*$/;
 
@@ -1893,7 +1894,29 @@
     return next;
   }
 
-  // 只在卡片运行环境启动时调用；数据刷新和预览更新不会推进轮换。
+  // bridge_snapshot 会在新运行环境收到首个共享快照时被替换。
+  // 页码与轮换位置另存原生同步 localStorage，避免刚翻页便熄屏时被尚未确认的旧副本覆盖。
+  function restoreLocal(storage, snapshot) {
+    if (!storage) return snapshot;
+    try {
+      var saved = parsed(storage.getItem(LOCAL_KEY));
+      if (!saved) return snapshot;
+      if (typeof saved.page === 'string') snapshot.page = saved.page;
+      if (saved.appearanceRevision === normalize(snapshot.appearance).revision &&
+          typeof saved.wallpaperId === 'string') snapshot.wallpaperId = saved.wallpaperId;
+    } catch (_) { /* 无原生本地存储时仍使用桥快照。 */ }
+    return snapshot;
+  }
+
+  function saveLocal(storage, snapshot) {
+    if (!storage) return;
+    try {
+      storage.setItem(LOCAL_KEY, JSON.stringify({ page: snapshot.page,
+        wallpaperId: snapshot.wallpaperId, appearanceRevision: normalize(snapshot.appearance).revision }));
+    } catch (_) { /* 共享快照与 bridge.storage 仍按原协议保存。 */ }
+  }
+
+  // 卡片启动及息屏恢复时调用；数据刷新和预览更新不会推进轮换。
   function advance(snapshot) {
     var next = buildSnapshot(snapshot.config, snapshot);
     var images = normalize(next.appearance).images;
@@ -1945,6 +1968,7 @@
   window.AiUsageAppearance = {
     KEY: KEY, PAGE_KEY: PAGE_KEY, MAX_SNAPSHOT_CHARS: MAX_SNAPSHOT_CHARS,
     normalize: normalize, buildSnapshot: buildSnapshot, advance: advance,
+    restoreLocal: restoreLocal, saveLocal: saveLocal,
     read: read, save: save
   };
 })();

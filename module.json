@@ -1,8 +1,8 @@
 {
   "id": "dev.finall.aitoken",
   "name": "AI 用量背屏",
-  "version": "0.4.1",
-  "versionCode": 9,
+  "version": "0.4.2",
+  "versionCode": 10,
   "apiVersion": 2,
   "description": "查看 Codex、Kimi Code、DeepSeek、小米 MiMo 与 Cursor 用量，背屏最多展示四个来源",
   "author": "finall1008",

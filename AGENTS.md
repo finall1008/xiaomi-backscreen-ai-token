@@ -8,7 +8,7 @@
 ## 模块仓库
 
 - 本仓库是 rear-card-bridge 卡片模块。Git 导入读取根目录 [module.json](<module.json>) 以及 `npm run build` 生成的 `card/`、`webroot/`、`background/`；这三份编译产物必须随功能改动提交。手机不执行 npm。
-- 当前版本为 `0.4.1`，versionCode 为 `9`。同一模块 id 更新安装时必须递增 `versionCode`。
+- 当前版本为 `0.4.2`，versionCode 为 `10`。同一模块 id 更新安装时必须递增 `versionCode`。
 
 ## 界面与背屏卡片
 

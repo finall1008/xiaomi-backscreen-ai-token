@@ -26,6 +26,7 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
   var displayed = JSON.stringify(current.config);
   var pageRevision = 0;
   function publish() {
+    appearance.saveLocal(typeof localStorage === 'undefined' ? null : localStorage, current);
     if (!bridge.card.saveSnapshot) return;
     try {
       var saved = bridge.card.saveSnapshot(current);
@@ -143,6 +144,40 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
       return _ref.apply(this, arguments);
     };
   }());
+
+  // AOD 有 visibilitychange，但直接 OFF/ON 不发事件，恢复时也可能沿用旧 JS。
+  // 宿主本来就有统一 RAF 循环；这里只观察回调中断，不在每帧绘图或访问桥。
+  var wasHidden = document.hidden === true || document.visibilityState === 'hidden';
+  var lastFrame = null,
+    resumePending = false;
+  function hidden() {
+    return document.hidden === true || document.visibilityState === 'hidden';
+  }
+  function resume() {
+    wasHidden = false;
+    resumePending = false;
+    lastFrame = Date.now();
+    current.page = card.getState().pageKey;
+    var restored = appearance.advance(current);
+    current = restored.snapshot;
+    // 即使未配置壁纸也请求一帧，恢复原生已经清空的 Canvas。
+    card.setWallpaper(restored.wallpaper);
+    publish();
+  }
+  document.addEventListener('visibilitychange', function () {
+    if (hidden()) {
+      wasHidden = true;
+      publish();
+    } else if (wasHidden) resumePending = true;
+    // OFF 时也可能先收到 AOD EXIT；等原生真正恢复帧回调后再轮换，避免 OFF/ON 推进两次。
+  });
+  function observeFrame() {
+    var time = Date.now();
+    if (!hidden() && (resumePending || lastFrame !== null && time - lastFrame > 1000)) resume();
+    lastFrame = time;
+    window.requestAnimationFrame(observeFrame);
+  }
+  if (typeof window.requestAnimationFrame === 'function') window.requestAnimationFrame(observeFrame);
 
   // 周期取数由宿主调度。重读数据和图库不推进本次点亮的壁纸。
   bridge.card.onRefresh(load);

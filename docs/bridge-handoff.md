@@ -4,7 +4,7 @@
 
 ## 当前模块布局
 
-模块 id 为 `dev.finall.aitoken`，`version` 为 `0.4.1`，`versionCode` 为 `9`，声明 `network` / `storage`。Git 导入读取仓库根目录，手机不执行 npm：
+模块 id 为 `dev.finall.aitoken`，`version` 为 `0.4.2`，`versionCode` 为 `10`，声明 `network` / `storage`。Git 导入读取仓库根目录，手机不执行 npm：
 
 - [module.json](<../module.json>)
 - `card/`：编译后的经典卡片 JS（async/await 已转为生成器）与静态 assets
@@ -47,6 +47,10 @@
 壁纸与页码由 [共享展示逻辑](<../src/shared/appearance.js>) 合并保存，设置页与后台更新用量时不得覆盖掉这些字段。图库总量按真实的完整快照 JSON 检查 800×1024 字符，不另设图库张数限制。单张清晰图不超过 180K、模糊图不超过 30K，低于 storage 单值 256K 限制；设置页先检查完整快照，再写图库和快照，超限保留原图库。
 
 [启动入口](<../src/card/bootstrap.js>) 在渲染器执行前同步读取完整快照、选择下一张、恢复页码并写回选择结果。首帧图像源直接使用快照里的 Data URL，不依赖异步 storage、文件 URL 或网络解码。原生图片在赋值时 `complete=true` 且尺寸有效，就立即纳入绘制：模拟器实测 Data URL 已同步解码，但 `onload` 排在第一帧之后，仅等待回调会漏掉首帧壁纸。异步加载图库仅用于接收设置变更，同次运行刷新数据不推进轮换。翻页即保存稳定页标识；来源被移除导致页码失效时回到现有默认页。
+
+页码和轮换位置另同步写入原生 `localStorage` 的 `aiUsage.presentation`（只含 `page`、`wallpaperId`、`appearanceRevision`），在启动读取共享快照后恢复。宿主首次注入共享快照会替换 `bridge_snapshot`，这一小份本地记录避免刚翻页便熄屏时被尚未确认的共享副本覆盖；图库版本变化后不恢复旧图片选择。
+
+AOD 恢复监听 `visibilitychange`。原生直接 OFF/ON 不发送该事件，也不保证重建 JS，因此还在宿主已有 RAF 循环中观察超过 1 秒的回调中断：恢复时保持当前页、选择下一张并请求重绘。普通帧只检查时间，不绘图、不读写存储、不查询桥；事件和回调恢复共用同一状态，避免同次恢复推进两次。这是缺少 OFF/ON 事件的兼容处理，超过 1 秒的运行时卡顿也会被视为恢复。
 
 宿主文件选择器需识别 `FileChooserParams.MODE_OPEN_MULTIPLE` 并返回全部 URI，单选协议不变。
 
