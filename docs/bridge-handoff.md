@@ -4,7 +4,7 @@
 
 ## 当前模块布局
 
-模块 id 为 `dev.finall.aitoken`，`version` 为 `0.5.0`，`versionCode` 为 `11`，声明 `network` / `storage`。Git 导入读取仓库根目录，手机不执行 npm：
+模块 id 为 `dev.finall.aitoken`，`version` 为 `0.5.1`，`versionCode` 为 `12`，声明 `network` / `storage`。Git 导入读取仓库根目录，手机不执行 npm：
 
 - [module.json](<../module.json>)
 - `card/`：编译后的经典卡片 JS（async/await 已转为生成器）与静态 assets
@@ -21,7 +21,9 @@
 - 核心以 `AiUsageCore.create({storage, request, allowTokenRefresh})` 注入存储和网络。
 - 背屏与后台设 `allowTokenRefresh:false`，避免与设置页同时轮换 Codex refresh token；设置页是唯一续期方。
 - `background.intervalMinutes:30` 只声明默认周期；用户在桥内统一覆盖该模块周期，最短 5 分钟，更新模块保留覆盖值。模块不读取独立周期配置，不设前台定时器。
-- `bridge.card.requestRefresh()` 通知背屏重读用量缓存，不触发网络；背屏首页下拉查询全部已配置来源，详情页顶部下拉只查询当前来源，不受缓存年龄限制。
+- 修改展示来源或 Antigravity 总览额度选项时，设置页先保存含最新配置、图库与页码的共享快照，再调用 `bridge.card.requestRefresh()` 通知背屏重读缓存。休眠恢复会同步读取最新快照，避免旧画面覆盖设置结果；该通知不触发网络。
+- 背屏首页下拉查询全部已配置来源，详情页顶部下拉只查询当前来源，不受缓存年龄限制。
+- 背屏沿用已有 RAF，每秒检查一次宿主同步到本地的展示快照，更新运行中的画面；这一步只读本地存储，不产生桥 IPC 或网络请求。
 
 ## 当前 storage 键
 
@@ -33,6 +35,8 @@
 | `auth.kimi` / `auth.deepseek` | API Key 字符串 |
 | `auth.mimo` | `{type:'webview'}`：已检查的模块 Profile 会话；兼容旧手动 Cookie 字符串 |
 | `auth.cursor` | `{type:'webview'}`：已检查的 Cursor 官网会话，不保存 Cookie 或管理员密钥 |
+| `auth.antigravity` | Google OAuth 访问令牌、刷新令牌及项目与套餐信息，仅留本机 |
+| `display.antigravityPool` | 总览额度选项：`gemini` / `argon` / `claude`；Argon 独立分组，按接口返回的实际窗口展示 |
 | `display.providers` | JSON 来源 ID 数组，最多四个；空数组表示全部隐藏 |
 | `display.page` | `minimal` / `overview` / `provider:<id>`，稳定页标识，不用数组下标 |
 | `display.wallpapers` | `{revision, images:[id...]}`，小体积图库目录；清空也写入新版本 |
@@ -50,7 +54,7 @@
 
 页码和轮换位置另同步写入原生 `localStorage` 的 `aiUsage.presentation`（只含 `page`、`wallpaperId`、`appearanceRevision`），在启动读取共享快照后恢复。宿主首次注入共享快照会替换 `bridge_snapshot`，这一小份本地记录避免刚翻页便熄屏时被尚未确认的共享副本覆盖；图库版本变化后不恢复旧图片选择。
 
-AOD 恢复监听 `visibilitychange`。原生直接 OFF/ON 不发送该事件，也不保证重建 JS，因此还在宿主已有 RAF 循环中观察超过 1 秒的回调中断：恢复时保持当前页、选择下一张并请求重绘。普通帧只检查时间，不绘图、不读写存储、不查询桥；事件和回调恢复共用同一状态，避免同次恢复推进两次。这是缺少 OFF/ON 事件的兼容处理，超过 1 秒的运行时卡顿也会被视为恢复。
+AOD 恢复监听 `visibilitychange`。原生直接 OFF/ON 不发送该事件，也不保证重建 JS，因此还在宿主已有 RAF 循环中观察超过 1 秒的回调中断：恢复时先应用最新本地快照，再保持当前页、选择下一张并请求重绘。普通帧检查时间，每秒读取一次本地同步快照；只有配置变化时才重绘，不为此查询异步桥或网络。事件和回调恢复共用同一状态，避免同次恢复推进两次。这是缺少 OFF/ON 事件的兼容处理，超过 1 秒的运行时卡顿也会被视为恢复。
 
 宿主文件选择器需识别 `FileChooserParams.MODE_OPEN_MULTIPLE` 并返回全部 URI，单选协议不变。
 

@@ -235,6 +235,7 @@
         '<div class="pool-select" id="pool-' + id + '">' +
         '  <span class="pool-label">背屏总览优先展示</span>' +
         '  <label class="pool-option"><input id="pool-gemini-' + id + '" type="radio" name="pool-' + id + '" value="gemini" checked><span>Gemini</span></label>' +
+        '  <label class="pool-option"><input id="pool-argon-' + id + '" type="radio" name="pool-' + id + '" value="argon"><span>Argon</span></label>' +
         '  <label class="pool-option"><input id="pool-claude-' + id + '" type="radio" name="pool-' + id + '" value="claude"><span>Claude / GPT</span></label>' +
         '</div>' +
         '<div class="device-panel" id="device-' + id + '" hidden>' +
@@ -342,6 +343,7 @@
       verify: byId('verify-' + id),
       submitOAuth: byId('submit-oauth-' + id),
       poolGemini: byId('pool-gemini-' + id),
+      poolArgon: byId('pool-argon-' + id),
       poolClaude: byId('pool-claude-' + id)
     };
     var entry = ui[id];
@@ -353,6 +355,9 @@
     });
     if (entry.poolGemini) entry.poolGemini.addEventListener('change', function () {
       if (entry.poolGemini.checked) setAntigravityPool('gemini');
+    });
+    if (entry.poolArgon) entry.poolArgon.addEventListener('change', function () {
+      if (entry.poolArgon.checked) setAntigravityPool('argon');
     });
     if (entry.poolClaude) entry.poolClaude.addEventListener('change', function () {
       if (entry.poolClaude.checked) setAntigravityPool('claude');
@@ -436,11 +441,13 @@
         entry.visible.disabled = !ready || !configured || (shown >= MAX_CARD_PROVIDERS && !shownHere);
       }
       if (entry.poolGemini && entry.poolClaude) {
-        var pool = row && row.preferredPool === 'claude' ? 'claude' : 'gemini';
+        var pool = row && (row.preferredPool === 'claude' || row.preferredPool === 'argon') ? row.preferredPool : 'gemini';
         entry.poolGemini.checked = pool === 'gemini';
         entry.poolClaude.checked = pool === 'claude';
+        entry.poolArgon.checked = pool === 'argon';
         entry.poolGemini.disabled = !ready;
         entry.poolClaude.disabled = !ready;
+        entry.poolArgon.disabled = !ready;
       }
       if (entry.submitOAuth) entry.submitOAuth.disabled = !ready || !inSession;
       if (entry.code && id === 'antigravity') entry.code.disabled = !ready || !inSession;
@@ -515,12 +522,23 @@
     } catch (_) { /* 桥暂不可用时忽略，不影响本页状态。 */ }
   }
 
+  async function saveCardSnapshot() {
+    var appearance = window.AiUsageAppearance;
+    var config = await client.cardConfig();
+    config.emptyMessage = '请在卡片桥的模块设置中添加来源';
+    var page = await bridge.storage.get(appearance.PAGE_KEY);
+    var view = await appearance.read(bridge.storage);
+    var previous = typeof page === 'string' ? { page: page } : null;
+    await bridge.card.saveSnapshot(appearance.buildSnapshot(config, previous, view));
+  }
+
   async function setProviderVisible(id, visible) {
     if (!client || busy) return;
     setBusy(true, '');
     showRowError(id, null);
     try {
       await client.setProviderVisible(id, visible);
+      await saveCardSnapshot();
       showGlobal(providerName(id) + (visible ? ' 将显示在背屏' : ' 已从背屏隐藏，登录保留'));
       notifyCard();
     } catch (error) {
@@ -693,7 +711,8 @@
     showRowError('antigravity', null);
     try {
       await client.setAntigravityPool(pool);
-      showGlobal('Antigravity 总览优先展示已切换为 ' + (pool === 'claude' ? 'Claude / GPT' : 'Gemini'));
+      await saveCardSnapshot();
+      showGlobal('Antigravity 总览优先展示已切换为 ' + (pool === 'argon' ? 'Argon' : (pool === 'claude' ? 'Claude / GPT' : 'Gemini')));
       notifyCard();
     } catch (error) {
       showRowError('antigravity', errorText(error));

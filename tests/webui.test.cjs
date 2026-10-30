@@ -125,6 +125,7 @@ function makeEnvironment({ bridge, core }) {
     controls.push(document.getElementById(id));
   }
   vm.createContext(sandbox);
+  vm.runInContext(fs.readFileSync(path.join(root, 'src/shared/appearance.js'), 'utf8'), sandbox);
   vm.runInContext(read('main.js'), sandbox, { filename: 'main.js' });
   return { elements, controls, posted, fetchCalls, state };
 }
@@ -273,6 +274,8 @@ test('保存密钥立即查询；MiMo 开窗后检查；设备码终态失败不
 
 test('Cursor 开窗检查；背屏勾选自动保存，满 4 个时未选项禁用且已选可取消', async () => {
   const calls = [];
+  const saved = [];
+  const picture = { id: 'one', sharp: 'data:image/jpeg;base64,AA==', blur: 'data:image/jpeg;base64,AQ==' };
   const ids = ['codex', 'kimi', 'deepseek', 'mimo', 'cursor', 'antigravity', 'extra'];
   let rows = ids.map((id, index) => ({
     id,
@@ -284,8 +287,15 @@ test('Cursor 开窗检查；背屏勾选自动保存，满 4 个时未选项禁�
     } : null
   }));
   const bridge = {
-    storage: {},
-    card: { requestRefresh() { calls.push('notify'); } }
+    storage: { get: async key => ({
+      'display.page': 'overview',
+      'display.wallpapers': { revision: 1, images: ['one'] },
+      'wallpaper.one': picture
+    })[key] ?? null },
+    card: {
+      saveSnapshot: async value => { calls.push('snapshot'); saved.push(value); },
+      requestRefresh() { calls.push('notify'); }
+    }
   };
   const core = {
     providers: ids.map(id => ({
@@ -341,7 +351,10 @@ test('Cursor 开窗检查；背屏勾选自动保存，满 4 个时未选项禁�
   env.elements['visible-codex'].checked = false;
   env.elements['visible-codex'].listeners.change[0]();
   await tick();
-  assert.deepEqual(calls, ['visible:codex:false', 'notify']);
+  assert.deepEqual(calls, ['visible:codex:false', 'snapshot', 'notify']);
+  assert.deepEqual(Array.from(saved.at(-1).config.providers, row => row.id), ['kimi', 'deepseek', 'mimo']);
+  assert.equal(saved.at(-1).page, 'overview');
+  assert.equal(saved.at(-1).appearance.images[0].sharp, picture.sharp);
   assert.equal(env.elements['visible-cursor'].disabled, false, '取消后空出名额');
   assert.equal(env.elements['visible-antigravity'].disabled, false, '取消后立即允许勾选 Antigravity');
   assert.equal(env.elements['visible-extra'].disabled, true);
@@ -350,7 +363,7 @@ test('Cursor 开窗检查；背屏勾选自动保存，满 4 个时未选项禁�
   env.elements['visible-cursor'].checked = true;
   env.elements['visible-cursor'].listeners.change[0]();
   await tick();
-  assert.deepEqual(calls, ['visible:cursor:true', 'notify']);
+  assert.deepEqual(calls, ['visible:cursor:true', 'snapshot', 'notify']);
   assert.equal(env.elements['visible-cursor'].checked, true);
   assert.equal(env.elements['visible-cursor'].disabled, false, '已选中的来源可以再取消');
   assert.equal(env.elements['visible-codex'].disabled, true);
@@ -376,6 +389,14 @@ test('Cursor 开窗检查；背屏勾选自动保存，满 4 个时未选项禁�
   await tick();
   assert.deepEqual(calls, ['clear:cursor', 'notify']);
   assert.match(env.elements['global-status'].textContent, /网页登录会话保留/);
+
+  calls.length = 0;
+  bridge.card.saveSnapshot = async () => { throw new Error('快照写入失败'); };
+  env.elements['visible-kimi'].checked = false;
+  env.elements['visible-kimi'].listeners.change[0]();
+  await tick();
+  assert.deepEqual(calls, ['visible:kimi:false']);
+  assert.match(env.elements['error-kimi'].textContent, /快照写入失败/);
 });
 
 test('预览首次带 display.page，之后刷新保留预览自身页且不附整图库', async () => {
@@ -426,8 +447,8 @@ test('Antigravity 授权面板、回调确认与背屏总览优先池单选切�
   let preferredPool = 'gemini';
   let configured = false;
   const bridge = {
-    storage: {},
-    card: { requestRefresh() { calls.push('notify'); } }
+    storage: { get: async () => null },
+    card: { saveSnapshot: async () => { calls.push('snapshot'); }, requestRefresh() { calls.push('notify'); } }
   };
   const core = {
     providers: [{ id: 'antigravity', name: 'Antigravity', logoAsset: 'assets/antigravity.png' }],
@@ -477,8 +498,17 @@ test('Antigravity 授权面板、回调确认与背屏总览优先池单选切�
   env.elements['pool-gemini-antigravity'].checked = false;
   env.elements['pool-claude-antigravity'].listeners.change[0]();
   await tick();
-  assert.deepEqual(calls, ['pool:claude', 'notify']);
+  assert.deepEqual(calls, ['pool:claude', 'snapshot', 'notify']);
   assert.equal(env.elements['pool-claude-antigravity'].checked, true);
+
+  calls.length = 0;
+  env.elements['pool-argon-antigravity'].checked = true;
+  env.elements['pool-argon-antigravity'].listeners.change[0]();
+  await tick();
+  assert.deepEqual(calls, ['pool:argon', 'snapshot', 'notify']);
+  assert.equal(env.elements['pool-argon-antigravity'].checked, true);
+  assert.equal(env.elements['pool-gemini-antigravity'].checked, false);
+  assert.equal(env.elements['pool-claude-antigravity'].checked, false);
 
   // 点击 Google 授权登录，展开面板并填入回调链接确认。
   calls.length = 0;

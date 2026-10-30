@@ -1263,11 +1263,15 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
     return coreError('ERROR', 'Google 令牌请求失败（' + status + '）');
   }
   function normalizeAntigravityPool(raw) {
-    if (typeof raw === 'string' && raw.trim().toLowerCase() === 'claude') return 'claude';
+    if (typeof raw === 'string') {
+      var pool = raw.trim().toLowerCase();
+      if (pool === 'claude' || pool === 'argon') return pool;
+    }
     return 'gemini';
   }
   function windowPoolOfTitle(title) {
     var text = String(title || '');
+    if (/^Gemini.*Argon/i.test(text)) return 'argon';
     if (/^(?:Claude|GPT|3P|第三方)/i.test(text)) return 'claude';
     if (/^Gemini/i.test(text)) return 'gemini';
     return 'other';
@@ -1282,7 +1286,7 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
     var indexed = windows.map(function (win, idx) {
       var pool = win && win.pool ? win.pool : windowPoolOfTitle(win && win.title);
       var sec = win && typeof win.windowSeconds === 'number' && win.windowSeconds > 0 ? win.windowSeconds : 1e12;
-      var rank = pool === target ? 0 : pool === 'gemini' || pool === 'claude' ? 1 : 2;
+      var rank = pool === target ? 0 : pool === 'gemini' || pool === 'claude' || pool === 'argon' ? 1 : 2;
       var clean = {
         title: win.title,
         usedPercent: win.usedPercent,
@@ -1328,6 +1332,10 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
     var disp = (textValue(bucket.displayName) || textValue(bucket.display_name) || '').toLowerCase();
     var grp = String(groupName || '').toLowerCase();
     var combined = id + ' ' + grp + ' ' + disp;
+    if (combined.indexOf('argon') !== -1) return {
+      pool: 'argon',
+      label: textValue(groupName) || 'Gemini Argon'
+    };
     if (combined.indexOf('gemini') !== -1) return {
       pool: 'gemini',
       label: 'Gemini'
@@ -1460,7 +1468,8 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
     }
     var pools = {
       gemini: null,
-      claude: null
+      claude: null,
+      argon: null
     };
     for (var j = 0; j < modelsList.length; j++) {
       var entry = modelsList[j];
@@ -1470,13 +1479,13 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
       if (used === null) continue;
       var resetAt = isoReset(quota, 'resetTime') || isoReset(quota, 'reset_time');
       var label = (entry.id + ' ' + (textValue(entry.model.displayName) || '')).toLowerCase();
-      var poolKey = label.indexOf('gemini') !== -1 ? 'gemini' : 'claude';
+      var poolKey = label.indexOf('argon') !== -1 ? 'argon' : label.indexOf('gemini') !== -1 ? 'gemini' : 'claude';
       if (pools[poolKey] === null || used > pools[poolKey].usedPercent) {
         pools[poolKey] = {
           pool: poolKey,
-          title: (poolKey === 'gemini' ? 'Gemini' : 'Claude/GPT') + ' 5 小时',
+          title: (poolKey === 'argon' ? 'Gemini Argon' : poolKey === 'gemini' ? 'Gemini' : 'Claude/GPT') + ' 配额',
           usedPercent: used,
-          windowSeconds: FIVE_HOUR_SECONDS,
+          windowSeconds: 0,
           resetAt: resetAt
         };
       }
@@ -1484,6 +1493,7 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
     var rawWindows = [];
     if (pools.gemini !== null) rawWindows.push(pools.gemini);
     if (pools.claude !== null) rawWindows.push(pools.claude);
+    if (pools.argon !== null) rawWindows.push(pools.argon);
     var plan = loadInfo && loadInfo.plan ? loadInfo.plan : null;
     return {
       id: 'antigravity',
@@ -2544,6 +2554,12 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
             if (window.resetAt !== null) wire.resetAt = window.resetAt;
             return wire;
           });
+          if (provider.id === 'antigravity') {
+            var pool = yield readAntigravityPool();
+            entry.primaryWindow = entry.windows.filter(function (win) {
+              return windowPoolOfTitle(win.title) === pool;
+            })[0] || null;
+          }
           if (snapshot !== null) {
             if (snapshot.balance !== null) {
               var balance = {
@@ -2751,9 +2767,16 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
     /** 逐来源刷新；单来源失败只写状态，最后返回完整 state 数组。 */
     function _setAntigravityPool() {
       _setAntigravityPool = _asyncToGenerator(function* (pool) {
-        if (pool !== 'gemini' && pool !== 'claude') throw coreError('ERROR', '不支持的模型池选项');
+        if (pool !== 'gemini' && pool !== 'claude' && pool !== 'argon') throw coreError('ERROR', '不支持的模型池选项');
         yield storage.set(ANTIGRAVITY_POOL_KEY, pool);
         var snapshot = yield readSnapshot('antigravity');
+        // 0.5.0 缓存把 Argon 合并成 Gemini；首次选择时重取实际分组。
+        if (pool === 'argon' && (snapshot === null || !snapshot.windows.some(function (win) {
+          return windowPoolOfTitle(win.title) === 'argon';
+        })) && (yield isConfigured('antigravity'))) {
+          yield runRefresh('antigravity');
+          return pool;
+        }
         if (snapshot !== null) {
           snapshot.windows = sortAntigravityWindows(snapshot.windows, pool);
           yield storage.set(usageKey('antigravity'), JSON.stringify(snapshot));

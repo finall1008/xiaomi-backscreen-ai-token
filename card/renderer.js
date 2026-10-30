@@ -390,6 +390,7 @@
   // ---------- 来源展示辅助 ----------
   // 首页卡片优先展示最短时间窗口的用量；无窗口（纯余额）展示余额。
   function shortWindow(p) {
+    if (Object.prototype.hasOwnProperty.call(p, 'primaryWindow')) return p.primaryWindow;
     var wins = (p.windows || []).filter(function (w) {
       return w && typeof w.usedPercent === 'number';
     });

@@ -90,6 +90,7 @@ function card(cached, { stale = false, failNetwork = false, respond, initialSnap
     flush();
   }
   return { data, saved, listeners, timers, texts, release, flush, swipe, imageSources, drawn,
+    replaceSnapshot: value => { sharedSnapshot = value; },
     controller: sandbox.AiUsageCard, localValues,
     visibility(hidden) {
       document.hidden = hidden; document.visibilityState = hidden ? 'hidden' : 'visible';
@@ -396,6 +397,33 @@ test('native full OFF resumes the unchanged runtime without a visibility event',
   runtime.visibility(false);
   runtime.flush(33);
   assert.equal(runtime.saved.length, resumedSaves, 'a delayed visible event does not rotate again');
+});
+
+test('resume applies settings snapshot before drawing even when the refresh notification was missed', async () => {
+  const runtime = card(snapshot(42));
+  runtime.flush();
+  runtime.data['display.providers'] = '[]';
+  runtime.replaceSnapshot({ schemaVersion: 1, config: { providers: [], emptyMessage: '来源已隐藏' } });
+  runtime.flush(3000);
+  runtime.flush(33);
+  assert.equal(runtime.controller.getState().pageKey, null);
+  assert.deepEqual(runtime.saved.at(-1).config.providers, []);
+  assert.ok(!runtime.texts.includes('¥9.00'), '恢复首帧不继续显示旧来源');
+  assert.equal(runtime.requests(), 0);
+  runtime.release(); await tick();
+});
+
+test('running card applies changed local snapshots without a refresh event or bridge request', async () => {
+  const runtime = card(snapshot(42));
+  runtime.release(); await tick(); runtime.flush();
+  runtime.data['display.providers'] = '[]';
+  runtime.replaceSnapshot({ schemaVersion: 1, config: { providers: [], emptyMessage: '来源已隐藏' } });
+  runtime.flush(500);
+  runtime.flush(500);
+  runtime.flush(33);
+  assert.equal(runtime.controller.getState().pageKey, null);
+  assert.deepEqual(runtime.saved.at(-1).config.providers, []);
+  assert.equal(runtime.requests(), 0);
 });
 
 test('immediate sleep and JS rebuild retain local page and rotation position over a stale shared snapshot', async () => {

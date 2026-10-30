@@ -106,6 +106,20 @@ function createCard(config, frameOnly = true) {
   };
 }
 
+test('Antigravity overview uses the selected Argon weekly quota instead of a shorter generic window', () => {
+  const weekly = win('Gemini 4 Argon 本周', 604800, 94);
+  const view = createCard({ providers: [
+    { id: 'antigravity', name: 'Antigravity', windows: [win('Gemini 5 小时', 18000, 0), weekly], primaryWindow: weekly },
+    { id: 'deepseek', name: 'DeepSeek', balance: { amount: 25, currency: 'CNY' } }
+  ] });
+  assert.ok(view.has('94'));
+  assert.ok(!view.has('0'));
+  view.card.restorePage('minimal');
+  view.flushFrame();
+  assert.ok(view.has('94%'));
+  assert.ok(!view.has('0%'));
+});
+
 test('headers share the top-corner safe edge and minimal services use evenly spaced columns', () => {
   const rows = ['codex', 'kimi', 'mimo', 'cursor'].map(id => ({
     id, name: id, windows: [win('用量', 18000)]

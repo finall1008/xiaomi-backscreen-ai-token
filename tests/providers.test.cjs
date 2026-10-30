@@ -1295,9 +1295,36 @@ const ANTIGRAVITY_SUMMARY = {
         { bucketId: '3p-5h', displayName: 'Five Hour Limit', window: '5h', remainingFraction: 0.4, resetTime: '2026-10-31T14:00:00Z' },
         { bucketId: '3p-weekly', displayName: 'Weekly Limit', window: 'weekly', remainingFraction: 0.75, resetTime: '2026-11-06T00:00:00Z' }
       ]
+    },
+    {
+      displayName: 'Gemini 4 Argon',
+      buckets: [
+        { bucketId: 'gemini-argon-wtu-weekly', displayName: 'Gemini 4 Argon Weekly Limit', window: 'weekly', remainingFraction: 0.06, resetTime: '2026-11-06T08:04:10Z' }
+      ]
     }
   ]
 };
+
+test('selecting Argon refreshes the 0.5.0 cache that merged its weekly quota into Gemini', async () => {
+  const { core } = loadCore();
+  const storage = makeStorage({
+    'auth.antigravity': { accessToken: 'test-access', refreshToken: 'test-refresh' },
+    'usage.antigravity': { id: 'antigravity', updatedAt: 1,
+      windows: [{ title: 'Gemini 本周', usedPercent: 94, windowSeconds: 604800 }] }
+  });
+  const request = scripted(options => {
+    if (options.url.endsWith(':loadCodeAssist')) return { status: 200, body: JSON.stringify({ paidTier: { name: 'Google AI Pro' } }) };
+    assert.ok(options.url.endsWith(':retrieveUserQuotaSummary'));
+    return { status: 200, body: JSON.stringify(ANTIGRAVITY_SUMMARY) };
+  });
+  const client = core.create({ storage, request });
+  await client.setAntigravityPool('argon');
+  assert.equal((await client.cardConfig()).providers[0].primaryWindow.title, 'Gemini 4 Argon 本周');
+  assert.equal(request.calls.length, 2);
+  await client.setAntigravityPool('gemini');
+  await client.setAntigravityPool('argon');
+  assert.equal(request.calls.length, 2, '已有独立 Argon 缓存时只切换展示');
+});
 
 test('Antigravity PKCE login, refresh token login, pool preference and 401 token refresh', async () => {
   const { core } = loadCore();
@@ -1365,7 +1392,8 @@ test('Antigravity PKCE login, refresh token login, pool preference and 401 token
     ['Gemini 5 小时', 15, 18000],
     ['Claude/GPT 5 小时', 60, 18000],
     ['Gemini 本周', 10, 604800],
-    ['Claude/GPT 本周', 25, 604800]
+    ['Claude/GPT 本周', 25, 604800],
+    ['Gemini 4 Argon 本周', 94, 604800]
   ]);
   assert.ok(!JSON.stringify(await client.cardConfig()).includes('agy-refresh'), 'cardConfig 绝不泄露凭据');
   const reloaded = core.create({ storage, request });
@@ -1383,9 +1411,19 @@ test('Antigravity PKCE login, refresh token login, pool preference and 401 token
     ['Claude/GPT 5 小时', 60],
     ['Gemini 5 小时', 15],
     ['Claude/GPT 本周', 25],
-    ['Gemini 本周', 10]
+    ['Gemini 本周', 10],
+    ['Gemini 4 Argon 本周', 94]
   ]);
   assert.equal((await client.state()).find(r => r.id === 'antigravity').preferredPool, 'claude');
+  assert.equal(agyCard.primaryWindow.title, 'Claude/GPT 5 小时');
+  await client.setAntigravityPool('argon');
+  const argonCard = (await reloaded.cardConfig()).providers.find(p => p.id === 'antigravity');
+  assert.equal(argonCard.primaryWindow.title, 'Gemini 4 Argon 本周');
+  assert.equal(argonCard.primaryWindow.usedPercent, 94);
+  assert.equal(argonCard.primaryWindow.windowSeconds, 604800);
+  assert.equal((await reloaded.state()).find(r => r.id === 'antigravity').preferredPool, 'argon');
+  assert.equal(request.calls.length, callsBeforePool, '选择 Argon 不查询网络');
+  await client.setAntigravityPool('claude');
 
   // 模拟 access_token 过期（401），验证自动续期并保持 claude 优先排序。
   storage.data['auth.antigravity'] = JSON.stringify({
@@ -1428,7 +1466,10 @@ test('Antigravity PKCE login, refresh token login, pool preference and 401 token
   const fbSnapshot = await fallbackClient.completeAntigravityLogin('1//direct-refresh-token');
   assert.equal(fbSnapshot.plan, 'Standard');
   assert.deepEqual(plain(fbSnapshot.windows.map(w => [w.title, w.usedPercent])), [
-    ['Gemini 5 小时', 30],
-    ['Claude/GPT 5 小时', 75]
+    ['Claude/GPT 配额', 75],
+    ['Gemini Argon 配额', 30]
   ]);
+  assert.ok(fbSnapshot.windows.every(win => win.windowSeconds === 0), '模型接口没有窗口时长时不编造 5 小时额度');
+  await fallbackClient.setAntigravityPool('argon');
+  assert.equal((await fallbackClient.cardConfig()).providers[0].primaryWindow.title, 'Gemini Argon 配额');
 });
