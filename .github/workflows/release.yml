@@ -56,13 +56,13 @@ jobs:
         with:
           files: dist/ai-usage-*.zip
           body: |
-            AI 用量背屏模块（rear-card-bridge API v2），支持 Codex、Kimi Code、DeepSeek、小米 MiMo 与 Cursor。
+            AI 用量背屏模块（rear-card-bridge API v2），支持 Codex、Kimi Code、DeepSeek、小米 MiMo、Cursor 与 Antigravity。
 
-            - 修复顶部越出背屏右上圆角：简洁页、总览和详情 header 保持等宽，统一使用顶部安全边界。
-            - 修复翻页后立即息屏丢失页码：同步保存本地展示状态，运行环境重建后先恢复原页。
-            - 修复 AOD 与完全 OFF 后壁纸不轮换、画面不重绘；等待原生帧恢复后只切换一次，数据刷新不切换壁纸。
-            - 模拟器原生背屏已验证 AOD（DOZE_SUSPEND）、完全 OFF、翻页后立即息屏及重启背屏进程恢复；69 项自动测试通过。
-            - 完全 OFF 不提供可用的可见性事件，兼容路径检测超过 1 秒的帧中断；超过 1 秒的运行时卡顿也可能触发轮换。
+            - 新增 Antigravity：Google OAuth PKCE 授权码、回调链接或 Refresh Token 登录，授权页面在模块内置窗口打开。
+            - 展示 Gemini 与 Claude/GPT 的 5 小时和周额度，可切换背屏总览优先展示的模型池。
+            - Antigravity 在设置页、背屏和后台支持访问令牌续期；凭据保存在本机私有 bridge.storage。
+            - 背屏保持最多四个来源；隐藏来源保留登录，取消一个来源后可立即勾选其他已配置来源。
+            - 模拟器已验证内置 Google 登录、用量读取、显示名额切换，以及设置页重新加载后的授权保留和再次刷新；71 项自动测试通过。
             - 可从仓库 main 导入：https://github.com/finall1008/xiaomi-backscreen-ai-token，也可下载本 Release ZIP 安装。
             - 请搭配卡片桥 v1.3.1 或更新版本，以使用原生图片多选；图库没有固定张数限制，完整常显快照须在宿主 800K 上限内。
           generate_release_notes: true

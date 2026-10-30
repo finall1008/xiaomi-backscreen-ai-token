@@ -315,6 +315,39 @@ body > .banner {
   opacity: 0.5;
 }
 
+.pool-select {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-top: 10px;
+  font-size: 13.5px;
+}
+
+.pool-label {
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.pool-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.pool-option input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  padding: 0;
+  flex: none;
+}
+
+.pool-option input:disabled + span {
+  opacity: 0.5;
+}
+
 /* ---------- 表单与按钮 ---------- */
 
 .field {

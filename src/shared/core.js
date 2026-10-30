@@ -27,7 +27,8 @@
     { id: 'kimi', name: 'Kimi Code', logoAsset: 'assets/kimi.png' },
     { id: 'deepseek', name: 'DeepSeek', logoAsset: 'assets/deepseek.png' },
     { id: 'mimo', name: '小米 MiMo', logoAsset: 'assets/mimo.png' },
-    { id: 'cursor', name: 'Cursor', logoAsset: 'assets/cursor.png' }
+    { id: 'cursor', name: 'Cursor', logoAsset: 'assets/cursor.png' },
+    { id: 'antigravity', name: 'Antigravity', logoAsset: 'assets/antigravity.png' }
   ];
   var SECRET_PROVIDER = { kimi: true, deepseek: true, mimo: true };
   var ERROR_CODE = { AUTH_REQUIRED: true, CANCELLED: true, ERROR: true };
@@ -51,6 +52,28 @@
   var MIMO_USAGE_URL = 'https://platform.xiaomimimo.com/api/v1/tokenPlan/usage';
   var MIMO_DETAIL_URL = 'https://platform.xiaomimimo.com/api/v1/tokenPlan/detail';
   var CURSOR_USAGE_URL = 'https://cursor.com/api/usage-summary';
+
+  // Antigravity (Google Cloud Code) OAuth 与内部配额端点。
+  var ANTIGRAVITY_CLIENT_ID = '1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com';
+  var ANTIGRAVITY_CLIENT_SECRET = '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';
+  var ANTIGRAVITY_AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
+  var ANTIGRAVITY_TOKEN_URL = 'https://oauth2.googleapis.com/token';
+  var ANTIGRAVITY_REDIRECT_URI = 'https://antigravity.google/oauth-callback';
+  var ANTIGRAVITY_SCOPES = [
+    'https://www.googleapis.com/auth/cloud-platform',
+    'https://www.googleapis.com/auth/userinfo.email',
+    'https://www.googleapis.com/auth/userinfo.profile',
+    'https://www.googleapis.com/auth/cclog',
+    'https://www.googleapis.com/auth/experimentsandconfigs',
+    'https://www.googleapis.com/auth/aicode',
+    'openid'
+  ].join(' ');
+  var ANTIGRAVITY_LOAD_URL = 'https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist';
+  var ANTIGRAVITY_QUOTA_SUMMARY_URL = 'https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary';
+  var ANTIGRAVITY_MODELS_URL = 'https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels';
+  var ANTIGRAVITY_USER_AGENT = 'antigravity/hub/2.24.0';
+  var ANTIGRAVITY_POOL_KEY = 'display.antigravityPool';
+
   var DISPLAY_PROVIDERS_KEY = 'display.providers';
   var MAX_DISPLAY_PROVIDERS = 4;
 
@@ -59,8 +82,9 @@
   var WEEK_SECONDS = 7 * 24 * 3600;
   var MONTH_SECONDS = 30 * 24 * 3600;
 
-  // 运行时单飞：同一执行环境里只允许一次 Codex refresh token 轮换在途。
+  // 运行时单飞：同一执行环境里只允许一次 Codex / Antigravity 令牌续期在途。
   var codexRotateFlight = null;
+  var antigravityRefreshFlight = null;
 
   function coreError(code, message) {
     var error = new Error(message);
@@ -956,6 +980,571 @@
     return parseCursorUsage(response.body, context.nowSeconds());
   }
 
+  // ---------- Antigravity (Google Cloud Code) PKCE / OAuth 与配额解析 ----------
+
+  var SHA256_K = [
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
+  ];
+
+  function encodeBase64Url(bytes) {
+    var out = '';
+    for (var i = 0; i < bytes.length; i += 3) {
+      var a = bytes[i];
+      var b = i + 1 < bytes.length ? bytes[i + 1] : 0;
+      var c = i + 2 < bytes.length ? bytes[i + 2] : 0;
+      var triple = (a << 16) | (b << 8) | c;
+      out += BASE64_CHARS.charAt((triple >>> 18) & 63);
+      out += BASE64_CHARS.charAt((triple >>> 12) & 63);
+      if (i + 1 < bytes.length) out += BASE64_CHARS.charAt((triple >>> 6) & 63);
+      if (i + 2 < bytes.length) out += BASE64_CHARS.charAt(triple & 63);
+    }
+    return out.replace(/\+/g, '-').replace(/\//g, '_');
+  }
+
+  function rotr32(x, n) {
+    return (x >>> n) | (x << (32 - n));
+  }
+
+  function sha256Ascii(text) {
+    var bytes = [];
+    for (var i = 0; i < text.length; i++) bytes.push(text.charCodeAt(i) & 0xff);
+    var bitLen = bytes.length * 8;
+    bytes.push(0x80);
+    while ((bytes.length % 64) !== 56) bytes.push(0);
+    bytes.push(0, 0, 0, 0);
+    bytes.push((bitLen >>> 24) & 0xff, (bitLen >>> 16) & 0xff, (bitLen >>> 8) & 0xff, bitLen & 0xff);
+    var H = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
+    var W = new Array(64);
+    for (var offset = 0; offset < bytes.length; offset += 64) {
+      for (var t = 0; t < 16; t++) {
+        var j = offset + t * 4;
+        W[t] = ((bytes[j] << 24) | (bytes[j + 1] << 16) | (bytes[j + 2] << 8) | bytes[j + 3]) | 0;
+      }
+      for (var t2 = 16; t2 < 64; t2++) {
+        var s0 = rotr32(W[t2 - 15], 7) ^ rotr32(W[t2 - 15], 18) ^ (W[t2 - 15] >>> 3);
+        var s1 = rotr32(W[t2 - 2], 17) ^ rotr32(W[t2 - 2], 19) ^ (W[t2 - 2] >>> 10);
+        W[t2] = (W[t2 - 16] + s0 + W[t2 - 7] + s1) | 0;
+      }
+      var a = H[0], b = H[1], c = H[2], d = H[3], e = H[4], f = H[5], g = H[6], h = H[7];
+      for (var r = 0; r < 64; r++) {
+        var S1 = rotr32(e, 6) ^ rotr32(e, 11) ^ rotr32(e, 25);
+        var ch = (e & f) ^ (~e & g);
+        var temp1 = (h + S1 + ch + SHA256_K[r] + W[r]) | 0;
+        var S0 = rotr32(a, 2) ^ rotr32(a, 13) ^ rotr32(a, 22);
+        var maj = (a & b) ^ (a & c) ^ (b & c);
+        var temp2 = (S0 + maj) | 0;
+        h = g; g = f; f = e; e = (d + temp1) | 0; d = c; c = b; b = a; a = (temp1 + temp2) | 0;
+      }
+      H[0] = (H[0] + a) | 0; H[1] = (H[1] + b) | 0; H[2] = (H[2] + c) | 0; H[3] = (H[3] + d) | 0;
+      H[4] = (H[4] + e) | 0; H[5] = (H[5] + f) | 0; H[6] = (H[6] + g) | 0; H[7] = (H[7] + h) | 0;
+    }
+    var out = [];
+    for (var k = 0; k < 8; k++) {
+      out.push((H[k] >>> 24) & 0xff, (H[k] >>> 16) & 0xff, (H[k] >>> 8) & 0xff, H[k] & 0xff);
+    }
+    return out;
+  }
+
+  function pkceChallenge(verifier) {
+    return encodeBase64Url(sha256Ascii(String(verifier)));
+  }
+
+  var PKCE_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+
+  function randomUrlSafe(length, seed) {
+    var out = '';
+    var acc = (Number(seed) || Date.now()) >>> 0;
+    for (var i = 0; i < length; i++) {
+      acc = (acc * 1664525 + 1013904223 + Math.floor(Math.random() * 0x100000000)) >>> 0;
+      out += PKCE_ALPHABET.charAt(acc & 63);
+    }
+    return out;
+  }
+
+  function buildAntigravityOAuth(nowMillis) {
+    var verifier = randomUrlSafe(48, nowMillis);
+    var state = randomUrlSafe(24, nowMillis ^ 0x5a5a5a5a);
+    var challenge = pkceChallenge(verifier);
+    var url = ANTIGRAVITY_AUTH_URL +
+      '?client_id=' + formEncode(ANTIGRAVITY_CLIENT_ID) +
+      '&redirect_uri=' + formEncode(ANTIGRAVITY_REDIRECT_URI) +
+      '&response_type=code' +
+      '&scope=' + formEncode(ANTIGRAVITY_SCOPES) +
+      '&access_type=offline' +
+      '&prompt=consent' +
+      '&code_challenge=' + formEncode(challenge) +
+      '&code_challenge_method=S256' +
+      '&state=' + formEncode(state);
+    return {
+      authorizationUrl: url,
+      state: state,
+      codeVerifier: verifier
+    };
+  }
+
+  function decodeFormPart(text) {
+    try {
+      return decodeURIComponent(String(text).replace(/\+/g, ' '));
+    } catch (_) {
+      return String(text);
+    }
+  }
+
+  function parseQueryParams(query) {
+    var params = {};
+    var clean = String(query || '').replace(/^[?#]/, '').split('#')[0];
+    if (!clean) return params;
+    var parts = clean.split('&');
+    for (var i = 0; i < parts.length; i++) {
+      var part = parts[i];
+      if (!part) continue;
+      var eq = part.indexOf('=');
+      var key = eq === -1 ? decodeFormPart(part) : decodeFormPart(part.slice(0, eq));
+      var val = eq === -1 ? '' : decodeFormPart(part.slice(eq + 1));
+      if (key && !hasOwn(params, key)) params[key] = val;
+    }
+    return params;
+  }
+
+  /**
+   * 识别用户粘贴的回调 URL、纯授权码、1// Refresh Token 或包含 refresh_token 的 JSON。
+   * 绝不在错误文案中回显用户输入内容。
+   */
+  function extractAntigravityAuthInput(rawInput, expectedState) {
+    var text = typeof rawInput === 'string' ? rawInput.trim() : '';
+    if (text === '') throw coreError('ERROR', '请输入回调链接、授权码或 Refresh Token');
+    if (text.charAt(0) === '{') {
+      var json = parseJson(text);
+      if (!isObject(json)) throw coreError('ERROR', '凭据 JSON 格式无法解析');
+      var rt = trimmedString(json.refresh_token) || trimmedString(json.refreshToken);
+      if (rt !== null) return { kind: 'refresh_token', refreshToken: rt };
+      var authCode = trimmedString(json.code) || trimmedString(json.authorization_code);
+      if (authCode !== null) return { kind: 'code', code: authCode };
+      throw coreError('ERROR', 'JSON 中缺少 refresh_token 或授权码');
+    }
+    if (/^https?:\/\//i.test(text)) {
+      var qIndex = text.indexOf('?');
+      if (qIndex === -1) throw coreError('ERROR', '回调链接缺少查询参数');
+      var params = parseQueryParams(text.slice(qIndex + 1));
+      if (trimmedString(params.error) !== null) {
+        throw coreError('ERROR', 'Google 授权未完成或已被拒绝');
+      }
+      var expected = trimmedString(expectedState);
+      var actualState = trimmedString(params.state);
+      if (expected !== null && actualState !== null && actualState !== expected) {
+        throw coreError('ERROR', 'Google 授权状态不匹配，请重新获取授权链接');
+      }
+      var code = trimmedString(params.code);
+      if (code === null) throw coreError('ERROR', '回调链接缺少 code 参数');
+      return { kind: 'code', code: code };
+    }
+    if (text.indexOf('1//') === 0) {
+      return { kind: 'refresh_token', refreshToken: text };
+    }
+    return { kind: 'code', code: text };
+  }
+
+  function antigravityAuthCodeForm(code, codeVerifier) {
+    return 'grant_type=' + formEncode('authorization_code') +
+      '&client_id=' + formEncode(ANTIGRAVITY_CLIENT_ID) +
+      '&client_secret=' + formEncode(ANTIGRAVITY_CLIENT_SECRET) +
+      '&code=' + formEncode(code) +
+      '&redirect_uri=' + formEncode(ANTIGRAVITY_REDIRECT_URI) +
+      '&code_verifier=' + formEncode(codeVerifier);
+  }
+
+  function antigravityRefreshForm(refreshToken) {
+    return 'grant_type=' + formEncode('refresh_token') +
+      '&client_id=' + formEncode(ANTIGRAVITY_CLIENT_ID) +
+      '&client_secret=' + formEncode(ANTIGRAVITY_CLIENT_SECRET) +
+      '&refresh_token=' + formEncode(refreshToken);
+  }
+
+  function normalizeAntigravityAuth(raw) {
+    var source = typeof raw === 'string' ? parseJson(raw) : raw;
+    if (!isObject(source)) return null;
+    var refreshToken = trimmedString(source.refreshToken) || trimmedString(source.refresh_token);
+    if (refreshToken === null) return null;
+    var accessToken = trimmedString(source.accessToken) || trimmedString(source.access_token) || '';
+    var projectId = trimmedString(source.projectId) || trimmedString(source.project_id) || '';
+    var plan = trimmedString(source.plan) || '';
+    return {
+      accessToken: accessToken,
+      refreshToken: refreshToken,
+      projectId: projectId,
+      plan: plan
+    };
+  }
+
+  function parseAntigravityTokens(body, fallbackRefreshToken) {
+    var json = readJson(body, 'Google 令牌响应无法解析');
+    var accessToken = trimmedString(json.access_token) || trimmedString(json.accessToken);
+    var refreshToken = trimmedString(json.refresh_token) || trimmedString(json.refreshToken) ||
+      trimmedString(fallbackRefreshToken);
+    if (accessToken === null || refreshToken === null) {
+      throw coreError('ERROR', 'Google 令牌响应不完整');
+    }
+    return { accessToken: accessToken, refreshToken: refreshToken };
+  }
+
+  function antigravityOAuthError(status, body) {
+    var json = parseJson(body);
+    var code = isObject(json) ? trimmedString(json.error) : null;
+    if (code === 'invalid_grant' || status === 401) {
+      return coreError('AUTH_REQUIRED', 'Antigravity 登录已失效，请重新登录');
+    }
+    if (code === 'invalid_request' || status === 400) {
+      return coreError('ERROR', 'Google 授权码无效或已过期，请重新登录');
+    }
+    return coreError('ERROR', 'Google 令牌请求失败（' + status + '）');
+  }
+
+  function normalizeAntigravityPool(raw) {
+    if (typeof raw === 'string' && raw.trim().toLowerCase() === 'claude') return 'claude';
+    return 'gemini';
+  }
+
+  function windowPoolOfTitle(title) {
+    var text = String(title || '');
+    if (/^(?:Claude|GPT|3P|第三方)/i.test(text)) return 'claude';
+    if (/^Gemini/i.test(text)) return 'gemini';
+    return 'other';
+  }
+
+  /**
+   * 按窗口时长升序（5h 在前，周在后）；同一时长下，用户选中的优先池（gemini 或 claude）排在首位。
+   */
+  function sortAntigravityWindows(windows, preferredPool) {
+    if (!Array.isArray(windows)) return [];
+    var target = normalizeAntigravityPool(preferredPool);
+    var indexed = windows.map(function (win, idx) {
+      var pool = win && win.pool ? win.pool : windowPoolOfTitle(win && win.title);
+      var sec = win && typeof win.windowSeconds === 'number' && win.windowSeconds > 0 ? win.windowSeconds : 1e12;
+      var rank = pool === target ? 0 : (pool === 'gemini' || pool === 'claude' ? 1 : 2);
+      var clean = {
+        title: win.title,
+        usedPercent: win.usedPercent,
+        windowSeconds: win.windowSeconds,
+        resetAt: win.resetAt === undefined ? null : win.resetAt
+      };
+      return { win: clean, sec: sec, rank: rank, idx: idx };
+    });
+    indexed.sort(function (a, b) {
+      if (a.sec !== b.sec) return a.sec - b.sec;
+      if (a.rank !== b.rank) return a.rank - b.rank;
+      return a.idx - b.idx;
+    });
+    return indexed.map(function (item) { return item.win; });
+  }
+
+  function tierLabel(tier) {
+    if (typeof tier === 'string') return textValue(tier);
+    if (!isObject(tier)) return null;
+    return textValue(tier.name) || textValue(tier.displayName) || textValue(tier.id);
+  }
+
+  function parseAntigravityLoad(body) {
+    var json = parseJson(body);
+    if (!isObject(json)) return null;
+    var rawProject = hasValue(json, 'cloudaicompanionProject')
+      ? json.cloudaicompanionProject
+      : (hasValue(json, 'cloudaicompanion_project') ? json.cloudaicompanion_project : null);
+    var projectId = null;
+    if (typeof rawProject === 'string') projectId = textValue(rawProject);
+    else if (isObject(rawProject)) projectId = textValue(rawProject.id) || textValue(rawProject.projectId);
+    var plan = tierLabel(json.paidTier) || tierLabel(json.paid_tier) ||
+      tierLabel(json.currentTier) || tierLabel(json.current_tier);
+    if (projectId === null && plan === null) return null;
+    return { projectId: projectId, plan: plan };
+  }
+
+  function classifyAntigravityBucketPool(bucket, groupName) {
+    var id = (textValue(bucket.bucketId) || textValue(bucket.bucket_id) || '').toLowerCase();
+    var disp = (textValue(bucket.displayName) || textValue(bucket.display_name) || '').toLowerCase();
+    var grp = String(groupName || '').toLowerCase();
+    var combined = id + ' ' + grp + ' ' + disp;
+    if (combined.indexOf('gemini') !== -1) return { pool: 'gemini', label: 'Gemini' };
+    if (combined.indexOf('3p') !== -1 || combined.indexOf('claude') !== -1 ||
+        combined.indexOf('gpt') !== -1 || combined.indexOf('third') !== -1) {
+      return { pool: 'claude', label: 'Claude/GPT' };
+    }
+    var custom = textValue(groupName) || '配额';
+    return { pool: 'other', label: custom };
+  }
+
+  function classifyAntigravityBucketWindow(bucket) {
+    var win = (textValue(bucket.window) || '').toLowerCase();
+    var id = (textValue(bucket.bucketId) || textValue(bucket.bucket_id) || '').toLowerCase();
+    var disp = (textValue(bucket.displayName) || textValue(bucket.display_name) || '').toLowerCase();
+    var combined = win + ' ' + id + ' ' + disp;
+    if (combined.indexOf('5h') !== -1 || combined.indexOf('five hour') !== -1 || combined.indexOf('5 hour') !== -1) {
+      return { seconds: FIVE_HOUR_SECONDS, label: '5 小时' };
+    }
+    if (combined.indexOf('week') !== -1 || combined.indexOf('7d') !== -1) {
+      return { seconds: WEEK_SECONDS, label: '本周' };
+    }
+    if (combined.indexOf('day') !== -1 || combined.indexOf('daily') !== -1 || combined.indexOf('24h') !== -1) {
+      return { seconds: LONG_WINDOW_SECONDS, label: '今日' };
+    }
+    var fallback = textValue(bucket.displayName) || textValue(bucket.display_name) || '限额';
+    return { seconds: 0, label: fallback };
+  }
+
+  function bucketUsedPercent(bucket) {
+    var remaining = firstFinite(bucket, ['remainingFraction', 'remaining_fraction']);
+    if (remaining !== null) {
+      var clamped = Math.max(0, Math.min(1, remaining));
+      return Math.round((1 - clamped) * 10000) / 100;
+    }
+    if (flexibleBoolean(bucket, 'disabled') === true) return 100;
+    return null;
+  }
+
+  function parseAntigravityQuota(body, loadInfo, preferredPool, updatedAt) {
+    var json = readJson(body, 'Antigravity 用量数据无法解析');
+    var entries = [];
+    if (Array.isArray(json.groups)) {
+      for (var g = 0; g < json.groups.length; g++) {
+        var group = json.groups[g];
+        if (!isObject(group) || !Array.isArray(group.buckets)) continue;
+        var gName = textValue(group.displayName) || textValue(group.display_name) || textValue(group.groupId) || '';
+        for (var b = 0; b < group.buckets.length; b++) {
+          if (isObject(group.buckets[b])) entries.push({ groupName: gName, bucket: group.buckets[b] });
+        }
+      }
+    }
+    if (!entries.length && Array.isArray(json.buckets)) {
+      for (var i = 0; i < json.buckets.length; i++) {
+        if (isObject(json.buckets[i])) entries.push({ groupName: '', bucket: json.buckets[i] });
+      }
+    }
+    var rawWindows = [];
+    for (var k = 0; k < entries.length; k++) {
+      var item = entries[k];
+      var used = bucketUsedPercent(item.bucket);
+      if (used === null) continue;
+      var poolInfo = classifyAntigravityBucketPool(item.bucket, item.groupName);
+      var winInfo = classifyAntigravityBucketWindow(item.bucket);
+      var resetAt = isoReset(item.bucket, 'resetTime');
+      if (resetAt === null) resetAt = isoReset(item.bucket, 'reset_time');
+      rawWindows.push({
+        pool: poolInfo.pool,
+        title: poolInfo.label + ' ' + winInfo.label,
+        usedPercent: used,
+        windowSeconds: winInfo.seconds,
+        resetAt: resetAt
+      });
+    }
+    var plan = loadInfo && loadInfo.plan ? loadInfo.plan : null;
+    return {
+      id: 'antigravity',
+      plan: plan,
+      updatedAt: updatedAt,
+      windows: sortAntigravityWindows(rawWindows, preferredPool),
+      balance: null,
+      credits: null,
+      booster: null,
+      hint: null
+    };
+  }
+
+  /** fetchAvailableModels 兜底：按 Gemini 与 Claude/GPT 聚合各模型 quotaInfo 的最高已用比例。 */
+  function parseAntigravityModelsQuota(body, loadInfo, preferredPool, updatedAt) {
+    var json = readJson(body, 'Antigravity 模型配额无法解析');
+    var modelsObj = isObject(json.models) ? json.models : null;
+    var modelsList = Array.isArray(json.models) ? json.models : [];
+    if (modelsObj !== null) {
+      var keys = Object.keys(modelsObj);
+      for (var i = 0; i < keys.length; i++) {
+        var m = modelsObj[keys[i]];
+        if (isObject(m)) modelsList.push({ id: keys[i], model: m });
+      }
+    } else {
+      modelsList = modelsList.filter(isObject).map(function (m) {
+        return { id: textValue(m.name) || textValue(m.modelId) || '', model: m };
+      });
+    }
+    var pools = { gemini: null, claude: null };
+    for (var j = 0; j < modelsList.length; j++) {
+      var entry = modelsList[j];
+      var quota = isObject(entry.model.quotaInfo) ? entry.model.quotaInfo
+        : (isObject(entry.model.quota_info) ? entry.model.quota_info : null);
+      if (quota === null) continue;
+      var used = bucketUsedPercent(quota);
+      if (used === null) continue;
+      var resetAt = isoReset(quota, 'resetTime') || isoReset(quota, 'reset_time');
+      var label = (entry.id + ' ' + (textValue(entry.model.displayName) || '')).toLowerCase();
+      var poolKey = label.indexOf('gemini') !== -1 ? 'gemini' : 'claude';
+      if (pools[poolKey] === null || used > pools[poolKey].usedPercent) {
+        pools[poolKey] = {
+          pool: poolKey,
+          title: (poolKey === 'gemini' ? 'Gemini' : 'Claude/GPT') + ' 5 小时',
+          usedPercent: used,
+          windowSeconds: FIVE_HOUR_SECONDS,
+          resetAt: resetAt
+        };
+      }
+    }
+    var rawWindows = [];
+    if (pools.gemini !== null) rawWindows.push(pools.gemini);
+    if (pools.claude !== null) rawWindows.push(pools.claude);
+    var plan = loadInfo && loadInfo.plan ? loadInfo.plan : null;
+    return {
+      id: 'antigravity',
+      plan: plan,
+      updatedAt: updatedAt,
+      windows: sortAntigravityWindows(rawWindows, preferredPool),
+      balance: null,
+      credits: null,
+      booster: null,
+      hint: null
+    };
+  }
+
+  function antigravityHeaders(accessToken) {
+    return {
+      Authorization: 'Bearer ' + accessToken,
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+      'User-Agent': ANTIGRAVITY_USER_AGENT
+    };
+  }
+
+  /**
+   * Google OAuth refresh_token 不会像 OpenAI 那样单次轮换作废，且 access_token 1 小时过期；
+   * 因此设置页、背屏与后台共用单飞续期，保证息屏超过 1 小时后仍能刷新。
+   */
+  async function refreshAntigravityTokens(context, seen, generation) {
+    if (antigravityRefreshFlight) return antigravityRefreshFlight;
+    var flight = (async function () {
+      var latest = normalizeAntigravityAuth(await context.storage.get(authKey('antigravity')));
+      if (latest === null) throw coreError('AUTH_REQUIRED', '尚未登录');
+      if (latest.accessToken !== '' &&
+          (latest.accessToken !== seen.accessToken || latest.refreshToken !== seen.refreshToken)) {
+        return latest;
+      }
+      var response = await http({
+        request: context.request,
+        url: ANTIGRAVITY_TOKEN_URL,
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
+        body: antigravityRefreshForm(latest.refreshToken),
+        cookies: false
+      });
+      if (!isSuccess(response.status)) throw antigravityOAuthError(response.status, response.body);
+      var tokens = parseAntigravityTokens(response.body, latest.refreshToken);
+      var updated = {
+        accessToken: tokens.accessToken,
+        refreshToken: tokens.refreshToken,
+        projectId: latest.projectId,
+        plan: latest.plan
+      };
+      await context.guardedSet('antigravity', generation, authKey('antigravity'), JSON.stringify(updated));
+      return updated;
+    })();
+    antigravityRefreshFlight = flight.then(function (value) {
+      antigravityRefreshFlight = null;
+      return value;
+    }, function (error) {
+      antigravityRefreshFlight = null;
+      throw error;
+    });
+    return antigravityRefreshFlight;
+  }
+
+  async function requestAntigravityLoad(context, accessToken) {
+    return http({
+      request: context.request,
+      url: ANTIGRAVITY_LOAD_URL,
+      method: 'POST',
+      headers: antigravityHeaders(accessToken),
+      body: JSON.stringify({
+        metadata: { ideType: 'ANTIGRAVITY', platform: 'PLATFORM_UNSPECIFIED', pluginType: 'GEMINI' }
+      }),
+      cookies: false
+    });
+  }
+
+  async function requestAntigravitySummary(context, accessToken, projectId) {
+    return http({
+      request: context.request,
+      url: ANTIGRAVITY_QUOTA_SUMMARY_URL,
+      method: 'POST',
+      headers: antigravityHeaders(accessToken),
+      body: projectId ? JSON.stringify({ project: projectId }) : '{}',
+      cookies: false
+    });
+  }
+
+  async function requestAntigravityModels(context, accessToken, projectId) {
+    return http({
+      request: context.request,
+      url: ANTIGRAVITY_MODELS_URL,
+      method: 'POST',
+      headers: antigravityHeaders(accessToken),
+      body: projectId ? JSON.stringify({ project: projectId }) : '{}',
+      cookies: false
+    });
+  }
+
+  async function fetchAntigravity(context, generation, preferredPool) {
+    var current = normalizeAntigravityAuth(await context.storage.get(authKey('antigravity')));
+    if (current === null) throw coreError('AUTH_REQUIRED', '尚未登录');
+    if (current.accessToken === '') {
+      current = await refreshAntigravityTokens(context, current, generation);
+    }
+    var loadResp = await requestAntigravityLoad(context, current.accessToken);
+    if (loadResp.status === 401) {
+      current = await refreshAntigravityTokens(context, current, generation);
+      loadResp = await requestAntigravityLoad(context, current.accessToken);
+    }
+    if (loadResp.status === 401) throw coreError('AUTH_REQUIRED', 'Antigravity 登录已失效，请重新登录');
+    var loadInfo = isSuccess(loadResp.status) ? parseAntigravityLoad(loadResp.body) : null;
+    var projectId = (loadInfo && loadInfo.projectId) || current.projectId || '';
+    var plan = (loadInfo && loadInfo.plan) || current.plan || null;
+    if ((projectId && projectId !== current.projectId) || (plan && plan !== current.plan)) {
+      current = {
+        accessToken: current.accessToken,
+        refreshToken: current.refreshToken,
+        projectId: projectId,
+        plan: plan || ''
+      };
+      await context.guardedSet('antigravity', generation, authKey('antigravity'), JSON.stringify(current));
+    }
+    var summaryResp = await requestAntigravitySummary(context, current.accessToken, projectId);
+    if (summaryResp.status === 401) {
+      current = await refreshAntigravityTokens(context, current, generation);
+      summaryResp = await requestAntigravitySummary(context, current.accessToken, projectId);
+    }
+    if (summaryResp.status === 401 || summaryResp.status === 403) {
+      throw coreError('AUTH_REQUIRED', 'Antigravity 登录已失效或账号无权访问，请重新登录');
+    }
+    var nowSec = context.nowSeconds();
+    var mergedLoad = { projectId: projectId, plan: plan };
+    if (isSuccess(summaryResp.status)) {
+      var snapshot = parseAntigravityQuota(summaryResp.body, mergedLoad, preferredPool, nowSec);
+      if (snapshot.windows.length > 0) return snapshot;
+    }
+    var modelsResp = await requestAntigravityModels(context, current.accessToken, projectId);
+    if (modelsResp.status === 401 || modelsResp.status === 403) {
+      throw coreError('AUTH_REQUIRED', 'Antigravity 登录已失效或账号无权访问，请重新登录');
+    }
+    if (isSuccess(modelsResp.status)) {
+      return parseAntigravityModelsQuota(modelsResp.body, mergedLoad, preferredPool, nowSec);
+    }
+    if (!isSuccess(summaryResp.status)) {
+      throw coreError('ERROR', 'Antigravity 读取失败（' + summaryResp.status + '）');
+    }
+    return parseAntigravityQuota(summaryResp.body, mergedLoad, preferredPool, nowSec);
+  }
+
   // ---------- 归一化快照缓存 ----------
 
   function normalizeWindows(raw) {
@@ -1474,7 +2063,7 @@
     var allowTokenRefresh = options.allowTokenRefresh !== false;
 
     // 每个来源的代数：clear / saveSecret 递增，用于丢弃在途写入。
-    var generations = { codex: 0, kimi: 0, deepseek: 0, mimo: 0, cursor: 0 };
+    var generations = { codex: 0, kimi: 0, deepseek: 0, mimo: 0, cursor: 0, antigravity: 0 };
 
     var context = {
       storage: storage,
@@ -1504,10 +2093,23 @@
       return secret === '' ? null : secret;
     }
 
+    async function readAntigravityPool() {
+      var raw = await storage.get(ANTIGRAVITY_POOL_KEY);
+      if (typeof raw === 'string' && raw.charAt(0) === '"') {
+        var parsed = parseJson(raw);
+        if (typeof parsed === 'string') raw = parsed;
+      }
+      return normalizeAntigravityPool(raw);
+    }
+
     async function readSnapshot(id) {
       var value = await storage.get(usageKey(id));
       var raw = typeof value === 'string' ? parseJson(value) : value;
-      return normalizeSnapshot(raw, id);
+      var snapshot = normalizeSnapshot(raw, id);
+      if (snapshot !== null && id === 'antigravity') {
+        snapshot.windows = sortAntigravityWindows(snapshot.windows, await readAntigravityPool());
+      }
+      return snapshot;
     }
 
     async function readStatus(id) {
@@ -1524,6 +2126,7 @@
       if (id === 'codex') return normalizeCodexAuth(await storage.get(authKey(id))) !== null;
       if (id === 'mimo') return parseMimoAuth(await storage.get(authKey(id))) !== null;
       if (id === 'cursor') return hasWebviewSession(await storage.get(authKey(id)));
+      if (id === 'antigravity') return normalizeAntigravityAuth(await storage.get(authKey(id))) !== null;
       return (await readSecret(id)) !== null;
     }
 
@@ -1553,6 +2156,7 @@
     async function fetchProvider(id, generation) {
       if (id === 'codex') return fetchCodex(context, generation);
       if (id === 'cursor') return fetchCursorUsage(context);
+      if (id === 'antigravity') return fetchAntigravity(context, generation, await readAntigravityPool());
       if (id === 'mimo') {
         var auth = parseMimoAuth(await storage.get(authKey('mimo')));
         if (auth === null) throw coreError('AUTH_REQUIRED', '尚未设置');
@@ -1569,7 +2173,7 @@
     async function runRefresh(id) {
       var generation = generations[id];
       if (!await isConfigured(id)) {
-        throw coreError('AUTH_REQUIRED', id === 'codex' ? '尚未登录' : '尚未设置');
+        throw coreError('AUTH_REQUIRED', (id === 'codex' || id === 'antigravity') ? '尚未登录' : '尚未设置');
       }
       try {
         var snapshot = await fetchProvider(id, generation);
@@ -1583,14 +2187,17 @@
       }
     }
 
-    async function visibleProviderIds() {
+    async function visibleProviderIds(configuredMap) {
       var raw = await storage.get(DISPLAY_PROVIDERS_KEY);
       var saved = typeof raw === 'string' ? parseJson(raw) : raw;
       var ids = [];
       for (var i = 0; i < PROVIDERS.length; i++) {
         var id = PROVIDERS[i].id;
         if (Array.isArray(saved) && saved.indexOf(id) === -1) continue;
-        if (await isConfigured(id)) ids.push(id);
+        var configured = configuredMap && hasOwn(configuredMap, id)
+          ? configuredMap[id]
+          : await isConfigured(id);
+        if (configured) ids.push(id);
       }
       // 无偏好时兼容已有四个来源；新安装只配置 Cursor 时也会默认展示它。
       return ids.slice(0, MAX_DISPLAY_PROVIDERS);
@@ -1609,19 +2216,26 @@
     }
 
     async function state() {
-      var visible = await visibleProviderIds();
+      var configuredMap = {};
+      for (var c = 0; c < PROVIDERS.length; c++) {
+        var pid = PROVIDERS[c].id;
+        configuredMap[pid] = await isConfigured(pid);
+      }
+      var visible = await visibleProviderIds(configuredMap);
       var rows = [];
       for (var i = 0; i < PROVIDERS.length; i++) {
         var provider = PROVIDERS[i];
-        rows.push({
+        var row = {
           id: provider.id,
           name: provider.name,
           logoAsset: provider.logoAsset,
-          configured: await isConfigured(provider.id),
+          configured: configuredMap[provider.id],
           visible: visible.indexOf(provider.id) !== -1,
           snapshot: await readSnapshot(provider.id),
           status: await readStatus(provider.id)
-        });
+        };
+        if (provider.id === 'antigravity') row.preferredPool = await readAntigravityPool();
+        rows.push(row);
       }
       return rows;
     }
@@ -1674,6 +2288,7 @@
 
     async function saveSecret(id, secret) {
       if (id === 'codex') throw coreError('ERROR', 'Codex 使用设备码登录，不能直接保存密钥');
+      if (id === 'antigravity') throw coreError('ERROR', 'Antigravity 使用 Google 授权登录，不能直接保存 API Key');
       if (!SECRET_PROVIDER[id]) throw coreError('ERROR', '不支持的来源');
       var value = typeof secret === 'string' ? secret.trim() : '';
       if (value === '') throw coreError('ERROR', '密钥不能为空');
@@ -1734,6 +2349,69 @@
         if (configured) await writeStatus('cursor', failure, generation);
         throw failure;
       }
+    }
+
+    function requestAntigravityOAuth() {
+      return buildAntigravityOAuth(now());
+    }
+
+    async function completeAntigravityLogin(input, session) {
+      generations.antigravity++;
+      var generation = generations.antigravity;
+      try {
+        var expectedState = session && typeof session.state === 'string' ? session.state : null;
+        var parsed = extractAntigravityAuthInput(input, expectedState);
+        var tokens;
+        if (parsed.kind === 'refresh_token') {
+          var refreshResp = await http({
+            request: context.request,
+            url: ANTIGRAVITY_TOKEN_URL,
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
+            body: antigravityRefreshForm(parsed.refreshToken),
+            cookies: false
+          });
+          if (!isSuccess(refreshResp.status)) throw antigravityOAuthError(refreshResp.status, refreshResp.body);
+          tokens = parseAntigravityTokens(refreshResp.body, parsed.refreshToken);
+        } else {
+          var verifier = session && typeof session.codeVerifier === 'string' ? session.codeVerifier.trim() : '';
+          if (!verifier) {
+            throw coreError('ERROR', '请先点击 Google 授权登录获取授权链接，或直接粘贴 1// 开头的 Refresh Token');
+          }
+          var codeResp = await http({
+            request: context.request,
+            url: ANTIGRAVITY_TOKEN_URL,
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
+            body: antigravityAuthCodeForm(parsed.code, verifier),
+            cookies: false
+          });
+          if (!isSuccess(codeResp.status)) throw antigravityOAuthError(codeResp.status, codeResp.body);
+          tokens = parseAntigravityTokens(codeResp.body, null);
+        }
+        var stored = {
+          accessToken: tokens.accessToken,
+          refreshToken: tokens.refreshToken,
+          projectId: '',
+          plan: ''
+        };
+        await guardedSet('antigravity', generation, authKey('antigravity'), JSON.stringify(stored));
+        await storage.remove(usageKey('antigravity'));
+        return await runRefresh('antigravity');
+      } catch (error) {
+        throw toCoreError(error);
+      }
+    }
+
+    async function setAntigravityPool(pool) {
+      if (pool !== 'gemini' && pool !== 'claude') throw coreError('ERROR', '不支持的模型池选项');
+      await storage.set(ANTIGRAVITY_POOL_KEY, pool);
+      var snapshot = await readSnapshot('antigravity');
+      if (snapshot !== null) {
+        snapshot.windows = sortAntigravityWindows(snapshot.windows, pool);
+        await storage.set(usageKey('antigravity'), JSON.stringify(snapshot));
+      }
+      return pool;
     }
 
     /** 逐来源刷新；单来源失败只写状态，最后返回完整 state 数组。 */
@@ -1800,6 +2478,9 @@
       cardConfig: cardConfig,
       setProviderVisible: setProviderVisible,
       checkCursorLogin: checkCursorLogin,
+      requestAntigravityOAuth: requestAntigravityOAuth,
+      completeAntigravityLogin: completeAntigravityLogin,
+      setAntigravityPool: setAntigravityPool,
       saveSecret: saveSecret,
       clear: clear,
       refresh: refresh,
@@ -1831,6 +2512,12 @@
       parseMimoUsage: parseMimoUsage,
       parseMimoDetail: parseMimoDetail,
       parseCursorUsage: parseCursorUsage,
+      parseAntigravityLoad: parseAntigravityLoad,
+      parseAntigravityQuota: parseAntigravityQuota,
+      parseAntigravityModelsQuota: parseAntigravityModelsQuota,
+      sortAntigravityWindows: sortAntigravityWindows,
+      extractAntigravityAuthInput: extractAntigravityAuthInput,
+      pkceChallenge: pkceChallenge,
       parseFlexibleEpoch: parseFlexibleEpoch
     }
   };

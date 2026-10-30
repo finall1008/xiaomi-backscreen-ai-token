@@ -109,7 +109,7 @@ test('ZIP contains an API v2 module, static logos and compiled classic card scri
   assert.ok(!text('background/main.js').includes('getContext('), 'background does not draw Canvas');
   const scripts = [...text('webroot/index.html').matchAll(/<script src="([^"]+)"/g)].map(match => match[1]);
   assert.deepEqual(scripts, ['bridge-shim.js', 'core.js', 'appearance.js', 'wallpapers.js', 'main.js']);
-  for (const id of ['openai', 'kimi', 'deepseek', 'mimo', 'cursor']) {
+  for (const id of ['openai', 'kimi', 'deepseek', 'mimo', 'cursor', 'antigravity']) {
     assert.deepEqual(Buffer.from(entries[`card/assets/${id}.png`]), fs.readFileSync(`prototype/assets/${id}.png`));
   }
   assert.ok(text('webroot/core.js').includes('async '), 'browser source stays native async');

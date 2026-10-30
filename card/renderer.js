@@ -61,6 +61,10 @@
     cursor: {
       color: '#e8e9f0',
       initial: 'C'
+    },
+    antigravity: {
+      color: '#4285f4',
+      initial: 'A'
     }
   };
   function clamp(n, a, b) {

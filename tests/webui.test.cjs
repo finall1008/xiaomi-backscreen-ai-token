@@ -59,9 +59,13 @@ test('main.js 覆盖桥缺失、预览消息、设备码与刷新联动', () => 
   const block = source.match(/WEBUI_REFRESHABLE = \{[^}]+\}/);
   assert.ok(block && block[0].includes('mimo'), '刷新来源包含 mimo');
   assert.ok(block && block[0].includes('cursor'), '刷新来源包含 cursor');
+  assert.ok(block && block[0].includes('antigravity'), '刷新来源包含 antigravity');
   assert.ok(source.includes('requestMimoLoginUrl'));
   assert.ok(source.includes('checkMimoLogin'));
   assert.ok(source.includes('checkCursorLogin'));
+  assert.ok(source.includes('requestAntigravityOAuth'));
+  assert.ok(source.includes('completeAntigravityLogin'));
+  assert.ok(source.includes('setAntigravityPool'));
   assert.ok(source.includes('setProviderVisible'));
   assert.ok(source.includes('https://cursor.com/dashboard/usage'));
   assert.ok(!source.includes('requestCursorLoginUrl'), 'Cursor 无签名登录入口');
@@ -269,7 +273,7 @@ test('保存密钥立即查询；MiMo 开窗后检查；设备码终态失败不
 
 test('Cursor 开窗检查；背屏勾选自动保存，满 4 个时未选项禁用且已选可取消', async () => {
   const calls = [];
-  const ids = ['codex', 'kimi', 'deepseek', 'mimo', 'cursor', 'extra'];
+  const ids = ['codex', 'kimi', 'deepseek', 'mimo', 'cursor', 'antigravity', 'extra'];
   let rows = ids.map((id, index) => ({
     id,
     configured: id !== 'extra',
@@ -321,6 +325,7 @@ test('Cursor 开窗检查；背屏勾选自动保存，满 4 个时未选项禁�
   assert.equal(env.elements['refresh-cursor'].disabled, false, '隐藏背屏仍可刷新已配置来源');
   assert.equal(env.elements['visible-cursor'].checked, false);
   assert.equal(env.elements['visible-cursor'].disabled, true, '已满 4 个时未选项禁用');
+  assert.equal(env.elements['visible-antigravity'].disabled, true, '已满 4 个时 Antigravity 不可勾选');
   assert.equal(env.elements['visible-codex'].checked, true);
   assert.equal(env.elements['visible-codex'].disabled, false, '已选项仍可取消');
   assert.equal(env.elements['visible-extra'].disabled, true, '未配置来源不可勾选');
@@ -338,6 +343,7 @@ test('Cursor 开窗检查；背屏勾选自动保存，满 4 个时未选项禁�
   await tick();
   assert.deepEqual(calls, ['visible:codex:false', 'notify']);
   assert.equal(env.elements['visible-cursor'].disabled, false, '取消后空出名额');
+  assert.equal(env.elements['visible-antigravity'].disabled, false, '取消后立即允许勾选 Antigravity');
   assert.equal(env.elements['visible-extra'].disabled, true);
 
   calls.length = 0;
@@ -413,4 +419,78 @@ test('预览首次带 display.page，之后刷新保留预览自身页且不附�
     assert.equal(env.posted[i].config.wallpaper, null);
     assert.equal(env.posted[i].config.appearance, undefined);
   }
+});
+
+test('Antigravity 授权面板、回调确认与背屏总览优先池单选切换', async () => {
+  const calls = [];
+  let preferredPool = 'gemini';
+  let configured = false;
+  const bridge = {
+    storage: {},
+    card: { requestRefresh() { calls.push('notify'); } }
+  };
+  const core = {
+    providers: [{ id: 'antigravity', name: 'Antigravity', logoAsset: 'assets/antigravity.png' }],
+    create: () => ({
+      state: async () => [{
+        id: 'antigravity',
+        name: 'Antigravity',
+        configured,
+        visible: configured,
+        preferredPool,
+        snapshot: configured ? { updatedAt: 1700000000, windows: [{ title: 'Claude/GPT 5 小时', usedPercent: 60 }] } : null,
+        status: null
+      }],
+      cardConfig: () => ({ providers: configured ? [{ id: 'antigravity' }] : [] }),
+      requestAntigravityOAuth: () => ({
+        authorizationUrl: 'https://accounts.google.com/o/oauth2/v2/auth?state=s1',
+        state: 's1',
+        codeVerifier: 'v1'
+      }),
+      completeAntigravityLogin: async (input, session) => {
+        calls.push('complete:' + input + ':' + (session && session.state));
+        configured = true;
+      },
+      setAntigravityPool: async pool => {
+        calls.push('pool:' + pool);
+        preferredPool = pool;
+      },
+      setProviderVisible: async () => {},
+      clear: async id => { calls.push('clear:' + id); configured = false; },
+      refresh: async () => {},
+      saveSecret: async () => {},
+      requestMimoLoginUrl: async () => 'https://account.xiaomi.com/pass/serviceLogin',
+      checkMimoLogin: async () => {},
+      checkCursorLogin: async () => {},
+      requestDeviceCode: async () => ({}),
+      completeDeviceLogin: async () => ({})
+    })
+  };
+  const env = makeEnvironment({ bridge, core });
+  await tick();
+
+  assert.equal(env.elements['pool-gemini-antigravity'].checked, true);
+  assert.equal(env.elements['pool-claude-antigravity'].checked, false);
+
+  // 切换优先池为 Claude/GPT。
+  env.elements['pool-claude-antigravity'].checked = true;
+  env.elements['pool-gemini-antigravity'].checked = false;
+  env.elements['pool-claude-antigravity'].listeners.change[0]();
+  await tick();
+  assert.deepEqual(calls, ['pool:claude', 'notify']);
+  assert.equal(env.elements['pool-claude-antigravity'].checked, true);
+
+  // 点击 Google 授权登录，展开面板并填入回调链接确认。
+  calls.length = 0;
+  env.elements['login-antigravity'].listeners.click[0]();
+  await tick();
+  assert.equal(env.elements['device-antigravity'].hidden, false);
+  assert.equal(env.elements['verify-antigravity'].href, 'https://accounts.google.com/o/oauth2/v2/auth?state=s1');
+
+  env.elements['code-antigravity'].value = 'https://antigravity.google/oauth-callback?code=4/0Axyz&state=s1';
+  env.elements['submit-oauth-antigravity'].listeners.click[0]();
+  await tick();
+  assert.deepEqual(calls, ['complete:https://antigravity.google/oauth-callback?code=4/0Axyz&state=s1:s1', 'notify']);
+  assert.equal(env.elements['code-antigravity'].value, '', '登录后清空输入凭据');
+  assert.equal(env.elements['device-antigravity'].hidden, true, '登录成功后收起授权面板');
 });

@@ -28,11 +28,12 @@
 
   // 各来源的主题色（用于首字母占位 logo 与首页卡片点缀）
   var BRAND = {
-    codex:    { color: '#e8e9f0', initial: 'C' },
-    kimi:     { color: '#5e8bff', initial: 'K' },
-    deepseek: { color: '#4d6bfe', initial: 'D' },
-    mimo:     { color: '#ff6900', initial: 'M' },
-    cursor:   { color: '#e8e9f0', initial: 'C' }
+    codex:       { color: '#e8e9f0', initial: 'C' },
+    kimi:        { color: '#5e8bff', initial: 'K' },
+    deepseek:    { color: '#4d6bfe', initial: 'D' },
+    mimo:        { color: '#ff6900', initial: 'M' },
+    cursor:      { color: '#e8e9f0', initial: 'C' },
+    antigravity: { color: '#4285f4', initial: 'A' }
   };
 
   function clamp(n, a, b) {

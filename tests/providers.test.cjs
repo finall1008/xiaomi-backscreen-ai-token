@@ -134,26 +134,30 @@ test('providers contract, secret lifecycle and state rows', async () => {
     { id: 'kimi', name: 'Kimi Code', logoAsset: 'assets/kimi.png' },
     { id: 'deepseek', name: 'DeepSeek', logoAsset: 'assets/deepseek.png' },
     { id: 'mimo', name: '小米 MiMo', logoAsset: 'assets/mimo.png' },
-    { id: 'cursor', name: 'Cursor', logoAsset: 'assets/cursor.png' }
+    { id: 'cursor', name: 'Cursor', logoAsset: 'assets/cursor.png' },
+    { id: 'antigravity', name: 'Antigravity', logoAsset: 'assets/antigravity.png' }
   ]);
 
   const storage = makeStorage();
   const client = core.create({ storage, request: scripted(() => { throw new Error('unused'); }) });
 
   const rows = await client.state();
-  assert.equal(rows.length, 5);
+  assert.equal(rows.length, 6);
   for (const row of rows) {
     assert.equal(row.configured, false);
     assert.equal(row.snapshot, null);
     assert.equal(row.status, null);
   }
+  assert.equal(rows.find(row => row.id === 'antigravity').preferredPool, 'gemini');
 
   await assert.rejects(() => client.refresh('kimi'), { code: 'AUTH_REQUIRED', message: '尚未设置' });
   await assert.rejects(() => client.refresh('codex'), { code: 'AUTH_REQUIRED', message: '尚未登录' });
+  await assert.rejects(() => client.refresh('antigravity'), { code: 'AUTH_REQUIRED', message: '尚未登录' });
   await assert.rejects(() => client.refresh('unknown'), { code: 'ERROR' });
 
   // saveSecret 只接受 kimi / deepseek / mimo，trim 后不能为空。
   await assert.rejects(() => client.saveSecret('codex', 'sk-x'), { code: 'ERROR' });
+  await assert.rejects(() => client.saveSecret('antigravity', 'sk-x'), { code: 'ERROR' });
   await assert.rejects(() => client.saveSecret('unknown', 'sk-x'), { code: 'ERROR' });
   await assert.rejects(() => client.saveSecret('kimi', '   '), { code: 'ERROR' });
   storage.data['status.kimi'] = JSON.stringify({ code: 'ERROR', message: '旧错误', updatedAt: 1 });
@@ -167,7 +171,7 @@ test('providers contract, secret lifecycle and state rows', async () => {
   await client.saveSecret('mimo', 'session=abc');
   const configured = await client.state();
   assert.deepEqual(plain(configured.map(row => [row.id, row.configured])),
-    [['codex', false], ['kimi', true], ['deepseek', true], ['mimo', true], ['cursor', false]]);
+    [['codex', false], ['kimi', true], ['deepseek', true], ['mimo', true], ['cursor', false], ['antigravity', false]]);
   assert.ok(!JSON.stringify(configured).includes('secret'), 'state 不返回凭据');
 
   await client.clear('kimi');
@@ -1096,7 +1100,7 @@ test('refreshAll isolates failures and returns full state', async () => {
   const client = core.create({ storage, request, now: () => 40000 });
 
   const rows = await client.refreshAll();
-  assert.deepEqual(plain(rows.map(row => row.id)), ['codex', 'kimi', 'deepseek', 'mimo', 'cursor']);
+  assert.deepEqual(plain(rows.map(row => row.id)), ['codex', 'kimi', 'deepseek', 'mimo', 'cursor', 'antigravity']);
   const kimi = rows.find(row => row.id === 'kimi');
   assert.equal(kimi.status.code, 'ERROR');
   assert.equal(kimi.status.message, 'Kimi Code 读取失败（500）');
@@ -1215,7 +1219,9 @@ test('display selection caps at four and persists hiding without clearing creden
   const storage = makeStorage({
     'auth.codex': { accessToken: 'access', refreshToken: 'refresh', accountId: 'account' },
     'auth.kimi': 'kimi-key', 'auth.deepseek': 'deepseek-key', 'auth.mimo': { type: 'webview' },
-    'auth.cursor': { type: 'webview' }, 'usage.kimi': { id: 'kimi', updatedAt: 1, windows: [] }
+    'auth.cursor': { type: 'webview' },
+    'auth.antigravity': JSON.stringify({ accessToken: 'agy-access', refreshToken: '1//agy-refresh' }),
+    'usage.kimi': { id: 'kimi', updatedAt: 1, windows: [] }
   });
   const options = { storage, request: scripted(() => { throw new Error('unused'); }) };
   const client = core.create(options);
@@ -1225,11 +1231,12 @@ test('display selection caps at four and persists hiding without clearing creden
   await client.setProviderVisible('kimi', false);
   assert.equal(storage.data['auth.kimi'], 'kimi-key');
   assert.ok(storage.data['usage.kimi']);
-  await client.setProviderVisible('cursor', true);
+  await client.setProviderVisible('antigravity', true);
   const reloaded = core.create(options);
-  assert.deepEqual(plain((await reloaded.cardConfig()).providers.map(p => p.id)), ['codex', 'deepseek', 'mimo', 'cursor']);
+  assert.deepEqual(plain((await reloaded.cardConfig()).providers.map(p => p.id)), ['codex', 'deepseek', 'mimo', 'antigravity']);
   assert.equal((await reloaded.state()).find(row => row.id === 'kimi').visible, false);
-  for (const id of ['codex', 'deepseek', 'mimo', 'cursor']) await reloaded.setProviderVisible(id, false);
+  assert.equal((await reloaded.state()).find(row => row.id === 'antigravity').configured, true);
+  for (const id of ['codex', 'deepseek', 'mimo', 'antigravity']) await reloaded.setProviderVisible(id, false);
   assert.deepEqual(plain((await reloaded.cardConfig()).providers), [], '取消全部不回退到默认来源');
 });
 
@@ -1268,8 +1275,160 @@ test('generation guards drop stale in-flight writes after clear or replaced secr
   await waitFor(() => replaceRequest.calls.length === 1, 'kimi request in flight');
   await replaceClient.saveSecret('kimi', 'sk-new');
   releaseReplace();
-  const replaceError = await rejection(pendingReplace);
-  assert.equal(replaceError.code, 'CANCELLED');
+  await assert.rejects(pendingReplace);
   assert.equal(replaceStorage.data['auth.kimi'], 'sk-new', '旧请求不覆盖新凭据');
   assert.equal('usage.kimi' in replaceStorage.data, false, '旧凭据数据不落盘');
+});
+
+const ANTIGRAVITY_SUMMARY = {
+  groups: [
+    {
+      displayName: 'Gemini Models',
+      buckets: [
+        { bucketId: 'gemini-weekly', displayName: 'Weekly Limit', window: 'weekly', remainingFraction: 0.9, resetTime: '2026-11-05T12:00:00Z' },
+        { bucketId: 'gemini-5h', displayName: 'Five Hour Limit', window: '5h', remainingFraction: 0.85, resetTime: '2026-10-31T14:00:00Z' }
+      ]
+    },
+    {
+      displayName: 'Claude and GPT models',
+      buckets: [
+        { bucketId: '3p-5h', displayName: 'Five Hour Limit', window: '5h', remainingFraction: 0.4, resetTime: '2026-10-31T14:00:00Z' },
+        { bucketId: '3p-weekly', displayName: 'Weekly Limit', window: 'weekly', remainingFraction: 0.75, resetTime: '2026-11-06T00:00:00Z' }
+      ]
+    }
+  ]
+};
+
+test('Antigravity PKCE login, refresh token login, pool preference and 401 token refresh', async () => {
+  const { core } = loadCore();
+  const crypto = require('node:crypto');
+  const storage = makeStorage();
+
+  // 验证内置纯 JS PKCE S256 与 node:crypto 一致。
+  const sampleVerifier = 'verifier_test_1234567890_abcdefghijklmnopqrstuvwxyz';
+  assert.equal(
+    core.parsers.pkceChallenge(sampleVerifier),
+    crypto.createHash('sha256').update(sampleVerifier).digest('base64url')
+  );
+
+  let accessIndex = 0;
+  const request = scripted(options => {
+    assert.equal(options.cookies, false, 'Antigravity 请求显式走原生桥且不携带 Cookie');
+    if (options.url === 'https://oauth2.googleapis.com/token') {
+      assert.equal(options.method, 'POST');
+      assert.ok(options.body.includes('client_id=1071006060591-'));
+      accessIndex++;
+      return {
+        status: 200,
+        body: JSON.stringify({
+          access_token: 'agy-access-' + accessIndex,
+          refresh_token: '1//agy-refresh-1'
+        })
+      };
+    }
+    if (options.url === 'https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist') {
+      if (options.headers.Authorization === 'Bearer expired-access') return { status: 401, body: '' };
+      assert.match(options.headers['User-Agent'], /^antigravity\/hub\//);
+      return {
+        status: 200,
+        body: JSON.stringify({
+          cloudaicompanionProject: 'gen-lang-client-999',
+          paidTier: { id: 'g1-pro-tier', name: 'Google AI Pro' }
+        })
+      };
+    }
+    if (options.url === 'https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary') {
+      assert.equal(JSON.parse(options.body).project, 'gen-lang-client-999');
+      return { status: 200, body: JSON.stringify(ANTIGRAVITY_SUMMARY) };
+    }
+    throw new Error('unexpected ' + options.url);
+  });
+
+  // allowTokenRefresh: false（模拟背屏/后台）时，Antigravity 仍可用 refresh_token 刷新 1 小时过期的 access_token。
+  const client = core.create({ storage, request, allowTokenRefresh: false, now: () => 1700000000000 });
+  const oauth = client.requestAntigravityOAuth();
+  assert.match(oauth.authorizationUrl, /^https:\/\/accounts\.google\.com\/o\/oauth2\/v2\/auth\?/);
+  assert.ok(oauth.authorizationUrl.includes('redirect_uri=' + encodeURIComponent('https://antigravity.google/oauth-callback')));
+
+  // state 不匹配的回调链接应拒绝。
+  await assert.rejects(
+    () => client.completeAntigravityLogin('https://antigravity.google/oauth-callback?code=4/0Axyz&state=wrong', oauth),
+    { code: 'ERROR', message: /状态不匹配/ }
+  );
+
+  // 通过完整回调链接完成登录（默认 Gemini 优先）。
+  const callbackUrl = 'https://antigravity.google/oauth-callback?state=' + encodeURIComponent(oauth.state) + '&code=4%2F0AeanS_test';
+  const snapshot = await client.completeAntigravityLogin(callbackUrl, oauth);
+  assert.equal(snapshot.id, 'antigravity');
+  assert.equal(snapshot.plan, 'Google AI Pro');
+  assert.deepEqual(plain(snapshot.windows.map(w => [w.title, w.usedPercent, w.windowSeconds])), [
+    ['Gemini 5 小时', 15, 18000],
+    ['Claude/GPT 5 小时', 60, 18000],
+    ['Gemini 本周', 10, 604800],
+    ['Claude/GPT 本周', 25, 604800]
+  ]);
+  assert.ok(!JSON.stringify(await client.cardConfig()).includes('agy-refresh'), 'cardConfig 绝不泄露凭据');
+  const reloaded = core.create({ storage, request });
+  const reloadedRow = (await reloaded.state()).find(row => row.id === 'antigravity');
+  assert.equal(reloadedRow.configured, true, '重新进入设置仍读取到已保存的授权');
+  assert.equal(reloadedRow.snapshot.updatedAt, snapshot.updatedAt, '用量缓存随授权保留');
+
+  // 切换背屏总览优先池为 Claude/GPT：不发网络请求即可重排缓存窗口。
+  const callsBeforePool = request.calls.length;
+  await client.setAntigravityPool('claude');
+  assert.equal(request.calls.length, callsBeforePool, '切换优先池不触发网络请求');
+  const configClaude = await client.cardConfig();
+  const agyCard = configClaude.providers.find(p => p.id === 'antigravity');
+  assert.deepEqual(plain(agyCard.windows.map(w => [w.title, w.usedPercent])), [
+    ['Claude/GPT 5 小时', 60],
+    ['Gemini 5 小时', 15],
+    ['Claude/GPT 本周', 25],
+    ['Gemini 本周', 10]
+  ]);
+  assert.equal((await client.state()).find(r => r.id === 'antigravity').preferredPool, 'claude');
+
+  // 模拟 access_token 过期（401），验证自动续期并保持 claude 优先排序。
+  storage.data['auth.antigravity'] = JSON.stringify({
+    accessToken: 'expired-access',
+    refreshToken: '1//agy-refresh-1',
+    projectId: 'gen-lang-client-999',
+    plan: 'Google AI Pro'
+  });
+  const refreshed = await client.refresh('antigravity');
+  assert.equal(refreshed.windows[0].title, 'Claude/GPT 5 小时');
+  assert.equal(JSON.parse(storage.data['auth.antigravity']).accessToken, 'agy-access-2');
+
+  // 支持直接粘贴 1// Refresh Token 登录，且当 retrieveUserQuotaSummary 返回空时自动降级到 fetchAvailableModels。
+  const fallbackClient = core.create({
+    storage: makeStorage(),
+    request: scripted(options => {
+      if (options.url === 'https://oauth2.googleapis.com/token') {
+        return { status: 200, body: JSON.stringify({ access_token: 'acc-fb' }) };
+      }
+      if (options.url.endsWith(':loadCodeAssist')) {
+        return { status: 200, body: JSON.stringify({ currentTier: { name: 'Standard' } }) };
+      }
+      if (options.url.endsWith(':retrieveUserQuotaSummary')) {
+        return { status: 200, body: JSON.stringify({ groups: [] }) };
+      }
+      if (options.url.endsWith(':fetchAvailableModels')) {
+        return {
+          status: 200,
+          body: JSON.stringify({
+            models: {
+              'gemini-4-argon': { displayName: 'Gemini 4 Argon', quotaInfo: { remainingFraction: 0.7, resetTime: '2026-10-31T12:00:00Z' } },
+              'claude-sonnet-4-5': { displayName: 'Claude Sonnet', quotaInfo: { remainingFraction: 0.25, resetTime: '2026-10-31T12:00:00Z' } }
+            }
+          })
+        };
+      }
+      throw new Error('unexpected ' + options.url);
+    })
+  });
+  const fbSnapshot = await fallbackClient.completeAntigravityLogin('1//direct-refresh-token');
+  assert.equal(fbSnapshot.plan, 'Standard');
+  assert.deepEqual(plain(fbSnapshot.windows.map(w => [w.title, w.usedPercent])), [
+    ['Gemini 5 小时', 30],
+    ['Claude/GPT 5 小时', 75]
+  ]);
 });

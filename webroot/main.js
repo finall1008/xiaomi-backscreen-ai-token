@@ -19,8 +19,8 @@
 (function () {
   'use strict';
 
-  /** MiMo / Cursor 通过原生网络使用模块 Profile；其他来源保持 WebView fetch。 */
-  var WEBUI_REFRESHABLE = { codex: true, kimi: true, deepseek: true, mimo: true, cursor: true };
+  /** MiMo / Cursor / Antigravity 通过原生网络请求；其他来源保持 WebView fetch。 */
+  var WEBUI_REFRESHABLE = { codex: true, kimi: true, deepseek: true, mimo: true, cursor: true, antigravity: true };
   var CURSOR_USAGE_PAGE = 'https://cursor.com/dashboard/usage';
   var MAX_CARD_PROVIDERS = 4;
 
@@ -36,6 +36,7 @@
   var previewPageSeed = null;
   var previewPageSent = false;
   var device = null;
+  var antigravitySession = null;
 
   var dom = {};
   /** id -> { article, badge, cache, metrics, status, error, ... } */
@@ -193,6 +194,7 @@
 
   function authKind(id) {
     if (id === 'codex') return 'device';
+    if (id === 'antigravity') return 'antigravity';
     if (id === 'mimo' || id === 'cursor') return 'webview';
     return 'key';
   }
@@ -224,6 +226,34 @@
         '</div>' +
         '<div class="actions">' +
         '  <button id="login-' + id + '" type="button" class="btn btn-primary">设备码登录</button>' +
+        '  <button id="refresh-' + id + '" type="button" class="btn">刷新用量</button>' +
+        '  <button id="clear-' + id + '" type="button" class="btn btn-danger">退出登录</button>' +
+        '</div>';
+    }
+    if (kind === 'antigravity') {
+      return '' +
+        '<div class="pool-select" id="pool-' + id + '">' +
+        '  <span class="pool-label">背屏总览优先展示</span>' +
+        '  <label class="pool-option"><input id="pool-gemini-' + id + '" type="radio" name="pool-' + id + '" value="gemini" checked><span>Gemini</span></label>' +
+        '  <label class="pool-option"><input id="pool-claude-' + id + '" type="radio" name="pool-' + id + '" value="claude"><span>Claude / GPT</span></label>' +
+        '</div>' +
+        '<div class="device-panel" id="device-' + id + '" hidden>' +
+        '  <p class="muted">在内置窗口中打开 Google 授权页面完成登录，复制页面显示的授权码（或跳转后的回调链接）粘贴到下方，点“确认登录”后才完成配置。</p>' +
+        '  <div class="actions">' +
+        '    <a id="verify-' + id + '" class="btn btn-link" href="#" target="_blank" rel="noreferrer noopener">打开授权页面</a>' +
+        '    <button id="copy-' + id + '" type="button" class="btn">复制授权链接</button>' +
+        '  </div>' +
+        '  <label class="field"><span>授权码 / 回调链接 / Refresh Token</span>' +
+        '    <input id="code-' + id + '" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="粘贴授权码、回调链接或 1// 刷新令牌">' +
+        '  </label>' +
+        '  <div class="actions">' +
+        '    <button id="submit-oauth-' + id + '" type="button" class="btn btn-primary">确认登录</button>' +
+        '    <button id="cancel-device-' + id + '" type="button" class="btn">取消登录</button>' +
+        '  </div>' +
+        '  <p class="device-status" id="device-status-' + id + '" role="status">等待粘贴授权码并确认登录…</p>' +
+        '</div>' +
+        '<div class="actions">' +
+        '  <button id="login-' + id + '" type="button" class="btn btn-primary">Google 授权登录</button>' +
         '  <button id="refresh-' + id + '" type="button" class="btn">刷新用量</button>' +
         '  <button id="clear-' + id + '" type="button" class="btn btn-danger">退出登录</button>' +
         '</div>';
@@ -309,7 +339,10 @@
       devicePanel: byId('device-' + id),
       deviceStatus: byId('device-status-' + id),
       code: byId('code-' + id),
-      verify: byId('verify-' + id)
+      verify: byId('verify-' + id),
+      submitOAuth: byId('submit-oauth-' + id),
+      poolGemini: byId('pool-gemini-' + id),
+      poolClaude: byId('pool-claude-' + id)
     };
     var entry = ui[id];
     if (entry.save) entry.save.addEventListener('click', function () { saveSecret(id); });
@@ -318,17 +351,31 @@
     if (entry.visible) entry.visible.addEventListener('change', function () {
       setProviderVisible(id, !!entry.visible.checked);
     });
+    if (entry.poolGemini) entry.poolGemini.addEventListener('change', function () {
+      if (entry.poolGemini.checked) setAntigravityPool('gemini');
+    });
+    if (entry.poolClaude) entry.poolClaude.addEventListener('change', function () {
+      if (entry.poolClaude.checked) setAntigravityPool('claude');
+    });
     if (entry.login) entry.login.addEventListener('click', function () {
       if (id === 'mimo') startMimoLogin();
       else if (id === 'cursor') startCursorLogin();
+      else if (id === 'antigravity') startAntigravityLogin();
       else startDeviceLogin(id);
     });
     if (entry.check) entry.check.addEventListener('click', function () {
       if (id === 'cursor') checkCursorLogin();
       else checkMimoLogin();
     });
-    if (entry.cancelDevice) entry.cancelDevice.addEventListener('click', function () { cancelDeviceSession('已取消登录'); });
-    if (entry.copy) entry.copy.addEventListener('click', function () { copyCode(id); });
+    if (entry.submitOAuth) entry.submitOAuth.addEventListener('click', function () { submitAntigravityLogin(); });
+    if (entry.cancelDevice) entry.cancelDevice.addEventListener('click', function () {
+      if (id === 'antigravity') cancelAntigravitySession('已取消登录');
+      else cancelDeviceSession('已取消登录');
+    });
+    if (entry.copy) entry.copy.addEventListener('click', function () {
+      if (id === 'antigravity') copyAntigravityUrl();
+      else copyCode(id);
+    });
   }
 
   function providerName(id) {
@@ -376,7 +423,7 @@
       var entry = ui[id];
       var row = findRow(id);
       var configured = !!(row && row.configured);
-      var inSession = !!(device && device.id === id);
+      var inSession = id === 'antigravity' ? !!antigravitySession : !!(device && device.id === id);
       var shownHere = !!(configured && row && row.visible);
       if (entry.secret) entry.secret.disabled = !ready;
       if (entry.save) entry.save.disabled = !ready;
@@ -388,6 +435,15 @@
         entry.visible.checked = shownHere;
         entry.visible.disabled = !ready || !configured || (shown >= MAX_CARD_PROVIDERS && !shownHere);
       }
+      if (entry.poolGemini && entry.poolClaude) {
+        var pool = row && row.preferredPool === 'claude' ? 'claude' : 'gemini';
+        entry.poolGemini.checked = pool === 'gemini';
+        entry.poolClaude.checked = pool === 'claude';
+        entry.poolGemini.disabled = !ready;
+        entry.poolClaude.disabled = !ready;
+      }
+      if (entry.submitOAuth) entry.submitOAuth.disabled = !ready || !inSession;
+      if (entry.code && id === 'antigravity') entry.code.disabled = !ready || !inSession;
       if (entry.cancelDevice) entry.cancelDevice.disabled = !inSession;
       if (entry.copy) entry.copy.disabled = !inSession;
     }
@@ -502,12 +558,14 @@
   async function clearProvider(id) {
     if (!client) return;
     if (device && device.id === id) cancelDeviceSession('');
+    if (id === 'antigravity' && antigravitySession) cancelAntigravitySession('');
     setBusy(true, '');
     showRowError(id, null);
     try {
       await client.clear(id);
       var entry = ui[id];
       if (entry && entry.secret) entry.secret.value = '';
+      if (entry && entry.code && id === 'antigravity') entry.code.value = '';
       showGlobal(providerName(id) + ((id === 'mimo' || id === 'cursor') ? ' 已移除，网页登录会话保留' : ' 已退出登录'));
       notifyCard();
       await reload();
@@ -624,6 +682,109 @@
     } finally {
       await reload();
       setBusy(false);
+    }
+  }
+
+  /* ---------- Antigravity 授权登录与优先池 ---------- */
+
+  async function setAntigravityPool(pool) {
+    if (!client || busy) return;
+    setBusy(true, '');
+    showRowError('antigravity', null);
+    try {
+      await client.setAntigravityPool(pool);
+      showGlobal('Antigravity 总览优先展示已切换为 ' + (pool === 'claude' ? 'Claude / GPT' : 'Gemini'));
+      notifyCard();
+    } catch (error) {
+      showRowError('antigravity', errorText(error));
+    } finally {
+      await reload();
+      setBusy(false);
+    }
+  }
+
+  async function startAntigravityLogin() {
+    if (!client || busy) return;
+    cancelAntigravitySession('');
+    showRowError('antigravity', null);
+    try {
+      var session = await Promise.resolve(client.requestAntigravityOAuth());
+      if (!session || !session.authorizationUrl) {
+        throw Object.assign(new Error('无法生成 Google 授权链接'), { code: 'ERROR' });
+      }
+      antigravitySession = session;
+      var entry = ui.antigravity;
+      if (entry) {
+        if (entry.code) entry.code.value = '';
+        if (entry.verify) {
+          var url = String(session.authorizationUrl);
+          if (/^https:\/\//i.test(url)) {
+            entry.verify.href = url;
+            entry.verify.removeAttribute('aria-disabled');
+          } else {
+            entry.verify.href = '#';
+            entry.verify.setAttribute('aria-disabled', 'true');
+          }
+        }
+        if (entry.devicePanel) entry.devicePanel.hidden = false;
+      }
+      showGlobal('请打开 Google 授权页面，完成后复制回调链接或授权码粘贴确认');
+    } catch (error) {
+      showRowError('antigravity', errorText(error));
+    } finally {
+      updateEnabled();
+    }
+  }
+
+  async function submitAntigravityLogin() {
+    var entry = ui.antigravity;
+    if (!client || busy || !entry || !entry.code) return;
+    var value = entry.code.value.replace(/^\s+|\s+$/g, '');
+    if (!value) {
+      showRowError('antigravity', '请粘贴回调链接、授权码或 Refresh Token');
+      return;
+    }
+    var session = antigravitySession;
+    setBusy(true, '正在验证 Antigravity 授权…');
+    showRowError('antigravity', null);
+    try {
+      await client.completeAntigravityLogin(value, session);
+      entry.code.value = '';
+      cancelAntigravitySession('');
+      showGlobal('Antigravity 登录成功，用量已更新');
+      notifyCard();
+    } catch (error) {
+      showRowError('antigravity', errorText(error));
+      showGlobal('');
+      notifyCard();
+    } finally {
+      await reload();
+      setBusy(false);
+    }
+  }
+
+  function cancelAntigravitySession(message) {
+    antigravitySession = null;
+    var entry = ui.antigravity;
+    if (entry) {
+      if (entry.code) entry.code.value = '';
+      if (entry.devicePanel) entry.devicePanel.hidden = true;
+    }
+    if (message) showGlobal(message);
+    updateEnabled();
+  }
+
+  function copyAntigravityUrl() {
+    if (!antigravitySession || !antigravitySession.authorizationUrl) return;
+    var url = String(antigravitySession.authorizationUrl);
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(url).then(function () {
+        showGlobal('授权链接已复制，请在浏览器中打开');
+      }).catch(function () {
+        showGlobal('请长按“打开授权页面”复制链接');
+      });
+    } else {
+      showGlobal('请长按“打开授权页面”复制链接');
     }
   }
 
@@ -909,7 +1070,10 @@
     readPreviewPage();
     dom.refreshAll.addEventListener('click', function () { refreshAll(); });
     // 离开页面才取消：切到外部验证浏览器不算离开（链接由系统浏览器打开，本页保持不变）。
-    window.addEventListener('pagehide', function () { cancelDeviceSession(''); });
+    window.addEventListener('pagehide', function () {
+      cancelDeviceSession('');
+      cancelAntigravitySession('');
+    });
 
     updateEnabled();
     reload();
