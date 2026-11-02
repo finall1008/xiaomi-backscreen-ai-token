@@ -543,7 +543,9 @@
     var hint = refreshHint() || '套餐用量' + (p.updatedAt || cfg.updatedAt ? ' · 更新于 ' + fmtClock(p.updatedAt || cfg.updatedAt) : '');
     ctx.fillText(hint, L + HEADER_PAD + 52, 91);
     if (active && refreshing) paintSpinner(L + HEADER_PAD + 52 + ctx.measureText(hint).width + 20, 91, 8);
-    badge(HEADER_R - HEADER_PAD, 62, (p.plan || '未知套餐').toUpperCase());
+    var plan = p.plan || '未知套餐';
+    if (p.id === 'antigravity') plan = plan.replace(/^google ai\s+/i, '');
+    badge(HEADER_R - HEADER_PAD, 62, plan.toUpperCase());
   }
   function usagePanel(y, h, title, win) {
     var known = win && typeof win.usedPercent === 'number';

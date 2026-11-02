@@ -58,11 +58,8 @@ jobs:
           body: |
             AI 用量背屏模块（rear-card-bridge API v2），支持 Codex、Kimi Code、DeepSeek、小米 MiMo、Cursor 与 Antigravity。
 
-            - 修复修改展示来源后背屏未更新：设置页先保存共享快照，运行中的背屏同步应用新配置；背屏关闭期间修改，恢复后也能读取新选择。
-            - Antigravity 新增独立 Argon 额度选项，保留 Gemini、Argon、Claude/GPT 各自分组；选择 Argon 后总览展示其真实周额度，不再优先显示通用 5 小时桶。
-            - 首次选择 Argon 时，若旧版缓存尚未区分分组，自动重新获取额度；模型接口缺少窗口时长时不再编造为 5 小时。
-            - 背屏每秒检查宿主已同步的本地快照，无需额外网络或桥 IPC 请求。
-            - 已在模拟器原生背屏验证来源移除、替换、关闭后恢复，以及 Argon 周额度 94% 的实际显示；75 项自动测试通过。
+            - Antigravity 套餐标签去掉 Google AI 前缀，Google AI Pro / Ultra 分别显示为 PRO / ULTRA，避免与来源名称重叠。
+            - 设置页预览与背屏使用相同渲染修改；75 项自动测试通过，并验证 Pro / Ultra 的标签输出。
             - 可从仓库 main 导入：https://github.com/finall1008/xiaomi-backscreen-ai-token，也可下载本 Release ZIP 安装。
             - 请搭配卡片桥 v1.3.1 或更新版本，以使用原生图片多选；图库没有固定张数限制，完整常显快照须在宿主 800K 上限内。
           generate_release_notes: true
