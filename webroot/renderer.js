@@ -33,7 +33,8 @@
     deepseek:    { color: '#4d6bfe', initial: 'D' },
     mimo:        { color: '#ff6900', initial: 'M' },
     cursor:      { color: '#e8e9f0', initial: 'C' },
-    antigravity: { color: '#4285f4', initial: 'A' }
+    antigravity: { color: '#4285f4', initial: 'A' },
+    opencode:    { color: '#e8e9f0', initial: 'O' }
   };
 
   function clamp(n, a, b) {

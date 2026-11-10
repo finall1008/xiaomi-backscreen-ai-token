@@ -18,7 +18,7 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
  * code 取值 AUTH_REQUIRED / CANCELLED / ERROR，任何情况下不写入服务端响应原文或凭据。
  *
  * 用量快照的归一化字段：
- * id、plan、updatedAt、windows、balance、credits、booster、hint；Cursor 另有安全展示明细 details。字段缺失时不伪造 0。
+ * id、plan、updatedAt、windows、balance、credits、booster、hint；details 保存安全展示明细。字段缺失时不伪造 0。
  * display.providers 保存用户勾选的来源 ID；未保存偏好时展示前四个已配置来源，保存后允许全部取消。
  */
 (function () {
@@ -48,11 +48,16 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
     id: 'antigravity',
     name: 'Antigravity',
     logoAsset: 'assets/antigravity.png'
+  }, {
+    id: 'opencode',
+    name: 'OpenCode',
+    logoAsset: 'assets/opencode.png'
   }];
   var SECRET_PROVIDER = {
     kimi: true,
     deepseek: true,
-    mimo: true
+    mimo: true,
+    opencode: true
   };
   var ERROR_CODE = {
     AUTH_REQUIRED: true,
@@ -78,6 +83,7 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
   var MIMO_USAGE_URL = 'https://platform.xiaomimimo.com/api/v1/tokenPlan/usage';
   var MIMO_DETAIL_URL = 'https://platform.xiaomimimo.com/api/v1/tokenPlan/detail';
   var CURSOR_USAGE_URL = 'https://cursor.com/api/usage-summary';
+  var OPENCODE_USAGE_URL = 'https://opencode.ai/zen/go/v1/usage';
 
   // Antigravity (Google Cloud Code) OAuth 与内部配额端点。
   var ANTIGRAVITY_CLIENT_ID = '1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com';
@@ -1023,7 +1029,7 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
   }
   function fetchCursorUsage(_x) {
     return _fetchCursorUsage.apply(this, arguments);
-  } // ---------- Antigravity (Google Cloud Code) PKCE / OAuth 与配额解析 ----------
+  } // ---------- OpenCode Go（workspace 个人 API Key） ----------
   function _fetchCursorUsage() {
     _fetchCursorUsage = _asyncToGenerator(function* (context) {
       var response = yield http({
@@ -1041,6 +1047,74 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
       return parseCursorUsage(response.body, context.nowSeconds());
     });
     return _fetchCursorUsage.apply(this, arguments);
+  }
+  function parseOpenCodeUsage(body, updatedAt) {
+    var data = readJson(body, 'OpenCode 用量响应格式错误');
+    var usage = isObject(data.usage) ? data.usage : {};
+    var definitions = [{
+      key: 'rolling',
+      title: '5 小时额度',
+      seconds: FIVE_HOUR_SECONDS
+    }, {
+      key: 'weekly',
+      title: '本周额度',
+      seconds: WEEK_SECONDS
+    }, {
+      key: 'monthly',
+      title: '本月额度',
+      seconds: MONTH_SECONDS
+    }];
+    var windows = [];
+    var limited = [];
+    for (var i = 0; i < definitions.length; i++) {
+      var definition = definitions[i];
+      var meter = usage[definition.key];
+      var percent = finiteDouble(meter, 'percent');
+      if (percent === null) continue;
+      windows.push({
+        title: definition.title,
+        usedPercent: percent,
+        windowSeconds: definition.seconds,
+        resetAt: parseIso8601EpochSeconds(meter.resetsAt)
+      });
+      if (meter.status === 'rate-limited') limited.push(definition.title);
+    }
+    if (!windows.length) throw coreError('ERROR', 'OpenCode 用量响应缺少额度信息');
+    return {
+      id: 'opencode',
+      plan: 'Go',
+      updatedAt: updatedAt,
+      windows: windows,
+      balance: null,
+      credits: null,
+      booster: null,
+      hint: null,
+      details: limited.length ? [limited.join('、') + '已达上限'] : []
+    };
+  }
+  function fetchOpenCodeUsage(_x2) {
+    return _fetchOpenCodeUsage.apply(this, arguments);
+  } // ---------- Antigravity (Google Cloud Code) PKCE / OAuth 与配额解析 ----------
+  function _fetchOpenCodeUsage() {
+    _fetchOpenCodeUsage = _asyncToGenerator(function* (secret) {
+      var response = yield http({
+        request: this.request,
+        url: OPENCODE_USAGE_URL,
+        headers: jsonHeaders(secret),
+        cookies: false
+      });
+      if (response.status === 401) throw coreError('AUTH_REQUIRED', 'OpenCode API Key 无效或已过期');
+      if (response.status === 403) {
+        var data = parseJson(response.body);
+        if (isObject(data) && isObject(data.error) && data.error.type === 'EntitlementError') {
+          throw coreError('ERROR', '该 API Key 所属账号或工作区未开通 OpenCode Go');
+        }
+        throw coreError('ERROR', 'OpenCode 访问受限，请检查网络或 API Key 权限');
+      }
+      if (!isSuccess(response.status)) throw coreError('ERROR', 'OpenCode 读取失败（' + response.status + '）');
+      return parseOpenCodeUsage(response.body, this.nowSeconds());
+    });
+    return _fetchOpenCodeUsage.apply(this, arguments);
   }
   var SHA256_K = [0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3, 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2];
   function encodeBase64Url(bytes) {
@@ -1519,7 +1593,7 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
    * Google OAuth refresh_token 不会像 OpenAI 那样单次轮换作废，且 access_token 1 小时过期；
    * 因此设置页、背屏与后台共用单飞续期，保证息屏超过 1 小时后仍能刷新。
    */
-  function refreshAntigravityTokens(_x2, _x3, _x4) {
+  function refreshAntigravityTokens(_x3, _x4, _x5) {
     return _refreshAntigravityTokens.apply(this, arguments);
   }
   function _refreshAntigravityTokens() {
@@ -1564,7 +1638,7 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
     });
     return _refreshAntigravityTokens.apply(this, arguments);
   }
-  function requestAntigravityLoad(_x5, _x6) {
+  function requestAntigravityLoad(_x6, _x7) {
     return _requestAntigravityLoad.apply(this, arguments);
   }
   function _requestAntigravityLoad() {
@@ -1586,7 +1660,7 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
     });
     return _requestAntigravityLoad.apply(this, arguments);
   }
-  function requestAntigravitySummary(_x7, _x8, _x9) {
+  function requestAntigravitySummary(_x8, _x9, _x0) {
     return _requestAntigravitySummary.apply(this, arguments);
   }
   function _requestAntigravitySummary() {
@@ -1604,7 +1678,7 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
     });
     return _requestAntigravitySummary.apply(this, arguments);
   }
-  function requestAntigravityModels(_x0, _x1, _x10) {
+  function requestAntigravityModels(_x1, _x10, _x11) {
     return _requestAntigravityModels.apply(this, arguments);
   }
   function _requestAntigravityModels() {
@@ -1622,7 +1696,7 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
     });
     return _requestAntigravityModels.apply(this, arguments);
   }
-  function fetchAntigravity(_x11, _x12, _x13) {
+  function fetchAntigravity(_x12, _x13, _x14) {
     return _fetchAntigravity.apply(this, arguments);
   } // ---------- 归一化快照缓存 ----------
   function _fetchAntigravity() {
@@ -1773,7 +1847,7 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
    * cookies 为 false 时也必须原样传出：设置页以“是否带有 cookies 字段”选择原生桥。
    * 响应的 url / headers 只供本次跳转判断，不写入快照、状态或日志。
    */
-  function http(_x14) {
+  function http(_x15) {
     return _http.apply(this, arguments);
   }
   function _http() {
@@ -1817,7 +1891,7 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
       Accept: 'application/json'
     };
   }
-  function fetchDeepSeek(_x15) {
+  function fetchDeepSeek(_x16) {
     return _fetchDeepSeek.apply(this, arguments);
   }
   function _fetchDeepSeek() {
@@ -1834,7 +1908,7 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
     });
     return _fetchDeepSeek.apply(this, arguments);
   }
-  function readKimiPlan(_x16) {
+  function readKimiPlan(_x17) {
     return _readKimiPlan.apply(this, arguments);
   }
   function _readKimiPlan() {
@@ -1854,7 +1928,7 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
     });
     return _readKimiPlan.apply(this, arguments);
   }
-  function fetchKimi(_x17) {
+  function fetchKimi(_x18) {
     return _fetchKimi.apply(this, arguments);
   }
   function _fetchKimi() {
@@ -2024,7 +2098,7 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
    * mode: session 使用 Profile Cookie；cookie 发送手动 Cookie 且 cookies:false；
    * anonymous 强制 cookies:false，让平台返回签名登录地址。
    */
-  function mimoRequest(_x18, _x19, _x20, _x21) {
+  function mimoRequest(_x19, _x20, _x21, _x22) {
     return _mimoRequest.apply(this, arguments);
   }
   function _mimoRequest() {
@@ -2043,7 +2117,7 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
     });
     return _mimoRequest.apply(this, arguments);
   }
-  function readMimoDetail(_x22, _x23, _x24) {
+  function readMimoDetail(_x23, _x24, _x25) {
     return _readMimoDetail.apply(this, arguments);
   }
   function _readMimoDetail() {
@@ -2058,7 +2132,7 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
     });
     return _readMimoDetail.apply(this, arguments);
   }
-  function loadMimoLoginUrl(_x25) {
+  function loadMimoLoginUrl(_x26) {
     return _loadMimoLoginUrl.apply(this, arguments);
   }
   /** 用已有 Passport 会话走签名回调。Cookie 由宿主按跳读写，这里不解析 Set-Cookie。 */
@@ -2074,7 +2148,7 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
     });
     return _loadMimoLoginUrl.apply(this, arguments);
   }
-  function restoreMimoPassport(_x26, _x27) {
+  function restoreMimoPassport(_x27, _x28) {
     return _restoreMimoPassport.apply(this, arguments);
   }
   function _restoreMimoPassport() {
@@ -2112,7 +2186,7 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
     });
     return _restoreMimoPassport.apply(this, arguments);
   }
-  function fetchMimoUsage(_x28, _x29, _x30) {
+  function fetchMimoUsage(_x29, _x30, _x31) {
     return _fetchMimoUsage.apply(this, arguments);
   } // ---------- Codex 客户端 ----------
   function _fetchMimoUsage() {
@@ -2142,7 +2216,7 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
       accountId: typeof source.accountId === 'string' ? source.accountId : ''
     });
   }
-  function usageRequest(_x31) {
+  function usageRequest(_x32) {
     return _usageRequest.apply(this, arguments);
   }
   /** 轮换单飞：并发 401 只发一次 refresh_token 请求，且写回前重读当前凭据。 */
@@ -2161,7 +2235,7 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
     });
     return _usageRequest.apply(this, arguments);
   }
-  function rotateCodexTokens(_x32, _x33, _x34) {
+  function rotateCodexTokens(_x33, _x34, _x35) {
     return _rotateCodexTokens.apply(this, arguments);
   }
   function _rotateCodexTokens() {
@@ -2199,7 +2273,7 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
     });
     return _rotateCodexTokens.apply(this, arguments);
   }
-  function fetchCodex(_x35, _x36) {
+  function fetchCodex(_x36, _x37) {
     return _fetchCodex.apply(this, arguments);
   }
   function _fetchCodex() {
@@ -2222,7 +2296,7 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
     });
     return _fetchCodex.apply(this, arguments);
   }
-  function pollForAuthorization(_x37, _x38, _x39) {
+  function pollForAuthorization(_x38, _x39, _x40) {
     return _pollForAuthorization.apply(this, arguments);
   } // ---------- create ----------
   function _pollForAuthorization() {
@@ -2279,7 +2353,8 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
       deepseek: 0,
       mimo: 0,
       cursor: 0,
-      antigravity: 0
+      antigravity: 0,
+      opencode: 0
     };
     var context = {
       storage: storage,
@@ -2293,7 +2368,7 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
     };
 
     /** 写入前校验代数，写入期间发生变化则撤回，避免清理后残留旧数据。 */
-    function guardedSet(_x40, _x41, _x42, _x43) {
+    function guardedSet(_x41, _x42, _x43, _x44) {
       return _guardedSet.apply(this, arguments);
     }
     function _guardedSet() {
@@ -2310,7 +2385,7 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
       return _guardedSet.apply(this, arguments);
     }
     context.guardedSet = guardedSet;
-    function readSecret(_x44) {
+    function readSecret(_x45) {
       return _readSecret.apply(this, arguments);
     }
     function _readSecret() {
@@ -2336,7 +2411,7 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
       });
       return _readAntigravityPool.apply(this, arguments);
     }
-    function readSnapshot(_x45) {
+    function readSnapshot(_x46) {
       return _readSnapshot.apply(this, arguments);
     }
     function _readSnapshot() {
@@ -2351,7 +2426,7 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
       });
       return _readSnapshot.apply(this, arguments);
     }
-    function readStatus(_x46) {
+    function readStatus(_x47) {
       return _readStatus.apply(this, arguments);
     }
     function _readStatus() {
@@ -2370,7 +2445,7 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
       });
       return _readStatus.apply(this, arguments);
     }
-    function isConfigured(_x47) {
+    function isConfigured(_x48) {
       return _isConfigured.apply(this, arguments);
     }
     function _isConfigured() {
@@ -2383,7 +2458,7 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
       });
       return _isConfigured.apply(this, arguments);
     }
-    function writeStatus(_x48, _x49, _x50) {
+    function writeStatus(_x49, _x50, _x51) {
       return _writeStatus.apply(this, arguments);
     }
     function _writeStatus() {
@@ -2402,7 +2477,7 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
       });
       return _writeStatus.apply(this, arguments);
     }
-    function persistSnapshot(_x51, _x52, _x53) {
+    function persistSnapshot(_x52, _x53, _x54) {
       return _persistSnapshot.apply(this, arguments);
     }
     function _persistSnapshot() {
@@ -2416,7 +2491,7 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
       });
       return _persistSnapshot.apply(this, arguments);
     }
-    function fetchProvider(_x54, _x55) {
+    function fetchProvider(_x55, _x56) {
       return _fetchProvider.apply(this, arguments);
     }
     function _fetchProvider() {
@@ -2434,11 +2509,12 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
         if (secret === null) throw coreError('AUTH_REQUIRED', '尚未设置');
         if (id === 'kimi') return fetchKimi.call(context, secret);
         if (id === 'deepseek') return fetchDeepSeek.call(context, secret);
+        if (id === 'opencode') return fetchOpenCodeUsage.call(context, secret);
         throw coreError('ERROR', '不支持的来源');
       });
       return _fetchProvider.apply(this, arguments);
     }
-    function runRefresh(_x56) {
+    function runRefresh(_x57) {
       return _runRefresh.apply(this, arguments);
     }
     function _runRefresh() {
@@ -2460,7 +2536,7 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
       });
       return _runRefresh.apply(this, arguments);
     }
-    function visibleProviderIds(_x57) {
+    function visibleProviderIds(_x58) {
       return _visibleProviderIds.apply(this, arguments);
     }
     function _visibleProviderIds() {
@@ -2479,7 +2555,7 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
       });
       return _visibleProviderIds.apply(this, arguments);
     }
-    function setProviderVisible(_x58, _x59) {
+    function setProviderVisible(_x59, _x60) {
       return _setProviderVisible.apply(this, arguments);
     }
     function _setProviderVisible() {
@@ -2602,7 +2678,7 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
       });
       return _cardConfig.apply(this, arguments);
     }
-    function saveSecret(_x60, _x61) {
+    function saveSecret(_x61, _x62) {
       return _saveSecret.apply(this, arguments);
     }
     function _saveSecret() {
@@ -2622,7 +2698,7 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
       });
       return _saveSecret.apply(this, arguments);
     }
-    function clear(_x62) {
+    function clear(_x63) {
       return _clear.apply(this, arguments);
     }
     function _clear() {
@@ -2635,7 +2711,7 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
       });
       return _clear.apply(this, arguments);
     }
-    function refresh(_x63) {
+    function refresh(_x64) {
       return _refresh.apply(this, arguments);
     }
     /** 不要求事先配置。成功后写入网页会话标记并覆盖旧的手动 Cookie；失败不新标记为已配置。 */
@@ -2702,7 +2778,7 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
     function requestAntigravityOAuth() {
       return buildAntigravityOAuth(now());
     }
-    function completeAntigravityLogin(_x64, _x65) {
+    function completeAntigravityLogin(_x65, _x66) {
       return _completeAntigravityLogin.apply(this, arguments);
     }
     function _completeAntigravityLogin() {
@@ -2761,7 +2837,7 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
       });
       return _completeAntigravityLogin.apply(this, arguments);
     }
-    function setAntigravityPool(_x66) {
+    function setAntigravityPool(_x67) {
       return _setAntigravityPool.apply(this, arguments);
     }
     /** 逐来源刷新；单来源失败只写状态，最后返回完整 state 数组。 */
@@ -2822,7 +2898,7 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
       });
       return _requestDeviceCode.apply(this, arguments);
     }
-    function completeDeviceLogin(_x67, _x68) {
+    function completeDeviceLogin(_x68, _x69) {
       return _completeDeviceLogin.apply(this, arguments);
     }
     function _completeDeviceLogin() {
@@ -2901,6 +2977,7 @@ function _asyncToGenerator(n) { return function () { var t = this, e = arguments
       parseMimoUsage: parseMimoUsage,
       parseMimoDetail: parseMimoDetail,
       parseCursorUsage: parseCursorUsage,
+      parseOpenCodeUsage: parseOpenCodeUsage,
       parseAntigravityLoad: parseAntigravityLoad,
       parseAntigravityQuota: parseAntigravityQuota,
       parseAntigravityModelsQuota: parseAntigravityModelsQuota,

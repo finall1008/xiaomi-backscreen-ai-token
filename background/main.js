@@ -16,7 +16,7 @@
  * code 取值 AUTH_REQUIRED / CANCELLED / ERROR，任何情况下不写入服务端响应原文或凭据。
  *
  * 用量快照的归一化字段：
- * id、plan、updatedAt、windows、balance、credits、booster、hint；Cursor 另有安全展示明细 details。字段缺失时不伪造 0。
+ * id、plan、updatedAt、windows、balance、credits、booster、hint；details 保存安全展示明细。字段缺失时不伪造 0。
  * display.providers 保存用户勾选的来源 ID；未保存偏好时展示前四个已配置来源，保存后允许全部取消。
  */
 (function () {
@@ -28,9 +28,10 @@
     { id: 'deepseek', name: 'DeepSeek', logoAsset: 'assets/deepseek.png' },
     { id: 'mimo', name: '小米 MiMo', logoAsset: 'assets/mimo.png' },
     { id: 'cursor', name: 'Cursor', logoAsset: 'assets/cursor.png' },
-    { id: 'antigravity', name: 'Antigravity', logoAsset: 'assets/antigravity.png' }
+    { id: 'antigravity', name: 'Antigravity', logoAsset: 'assets/antigravity.png' },
+    { id: 'opencode', name: 'OpenCode', logoAsset: 'assets/opencode.png' }
   ];
-  var SECRET_PROVIDER = { kimi: true, deepseek: true, mimo: true };
+  var SECRET_PROVIDER = { kimi: true, deepseek: true, mimo: true, opencode: true };
   var ERROR_CODE = { AUTH_REQUIRED: true, CANCELLED: true, ERROR: true };
   var CANCELLED_MESSAGE = '操作已取消';
 
@@ -52,6 +53,7 @@
   var MIMO_USAGE_URL = 'https://platform.xiaomimimo.com/api/v1/tokenPlan/usage';
   var MIMO_DETAIL_URL = 'https://platform.xiaomimimo.com/api/v1/tokenPlan/detail';
   var CURSOR_USAGE_URL = 'https://cursor.com/api/usage-summary';
+  var OPENCODE_USAGE_URL = 'https://opencode.ai/zen/go/v1/usage';
 
   // Antigravity (Google Cloud Code) OAuth 与内部配额端点。
   var ANTIGRAVITY_CLIENT_ID = '1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com';
@@ -978,6 +980,55 @@
     }
     if (!isSuccess(response.status)) throw coreError('ERROR', 'Cursor 读取失败（' + response.status + '）');
     return parseCursorUsage(response.body, context.nowSeconds());
+  }
+
+  // ---------- OpenCode Go（workspace 个人 API Key） ----------
+
+  function parseOpenCodeUsage(body, updatedAt) {
+    var data = readJson(body, 'OpenCode 用量响应格式错误');
+    var usage = isObject(data.usage) ? data.usage : {};
+    var definitions = [
+      { key: 'rolling', title: '5 小时额度', seconds: FIVE_HOUR_SECONDS },
+      { key: 'weekly', title: '本周额度', seconds: WEEK_SECONDS },
+      { key: 'monthly', title: '本月额度', seconds: MONTH_SECONDS }
+    ];
+    var windows = [];
+    var limited = [];
+    for (var i = 0; i < definitions.length; i++) {
+      var definition = definitions[i];
+      var meter = usage[definition.key];
+      var percent = finiteDouble(meter, 'percent');
+      if (percent === null) continue;
+      windows.push({
+        title: definition.title,
+        usedPercent: percent,
+        windowSeconds: definition.seconds,
+        resetAt: parseIso8601EpochSeconds(meter.resetsAt)
+      });
+      if (meter.status === 'rate-limited') limited.push(definition.title);
+    }
+    if (!windows.length) throw coreError('ERROR', 'OpenCode 用量响应缺少额度信息');
+    return {
+      id: 'opencode', plan: 'Go', updatedAt: updatedAt, windows: windows,
+      balance: null, credits: null, booster: null, hint: null,
+      details: limited.length ? [limited.join('、') + '已达上限'] : []
+    };
+  }
+
+  async function fetchOpenCodeUsage(secret) {
+    var response = await http({
+      request: this.request, url: OPENCODE_USAGE_URL, headers: jsonHeaders(secret), cookies: false
+    });
+    if (response.status === 401) throw coreError('AUTH_REQUIRED', 'OpenCode API Key 无效或已过期');
+    if (response.status === 403) {
+      var data = parseJson(response.body);
+      if (isObject(data) && isObject(data.error) && data.error.type === 'EntitlementError') {
+        throw coreError('ERROR', '该 API Key 所属账号或工作区未开通 OpenCode Go');
+      }
+      throw coreError('ERROR', 'OpenCode 访问受限，请检查网络或 API Key 权限');
+    }
+    if (!isSuccess(response.status)) throw coreError('ERROR', 'OpenCode 读取失败（' + response.status + '）');
+    return parseOpenCodeUsage(response.body, this.nowSeconds());
   }
 
   // ---------- Antigravity (Google Cloud Code) PKCE / OAuth 与配额解析 ----------
@@ -2069,7 +2120,7 @@
     var allowTokenRefresh = options.allowTokenRefresh !== false;
 
     // 每个来源的代数：clear / saveSecret 递增，用于丢弃在途写入。
-    var generations = { codex: 0, kimi: 0, deepseek: 0, mimo: 0, cursor: 0, antigravity: 0 };
+    var generations = { codex: 0, kimi: 0, deepseek: 0, mimo: 0, cursor: 0, antigravity: 0, opencode: 0 };
 
     var context = {
       storage: storage,
@@ -2173,6 +2224,7 @@
       if (secret === null) throw coreError('AUTH_REQUIRED', '尚未设置');
       if (id === 'kimi') return fetchKimi.call(context, secret);
       if (id === 'deepseek') return fetchDeepSeek.call(context, secret);
+      if (id === 'opencode') return fetchOpenCodeUsage.call(context, secret);
       throw coreError('ERROR', '不支持的来源');
     }
 
@@ -2531,6 +2583,7 @@
       parseMimoUsage: parseMimoUsage,
       parseMimoDetail: parseMimoDetail,
       parseCursorUsage: parseCursorUsage,
+      parseOpenCodeUsage: parseOpenCodeUsage,
       parseAntigravityLoad: parseAntigravityLoad,
       parseAntigravityQuota: parseAntigravityQuota,
       parseAntigravityModelsQuota: parseAntigravityModelsQuota,

@@ -65,6 +65,10 @@
     antigravity: {
       color: '#4285f4',
       initial: 'A'
+    },
+    opencode: {
+      color: '#e8e9f0',
+      initial: 'O'
     }
   };
   function clamp(n, a, b) {

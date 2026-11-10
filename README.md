@@ -1,19 +1,19 @@
 # AI 用量背屏
 
-基于 rear-card-bridge API v2 的卡片模块：在卡片桥的设置网页配置 Codex、Kimi Code、DeepSeek、小米 MiMo、Cursor 与 Antigravity，勾选最多四个来源，使用既有 Canvas 卡片查看用量。
+基于 rear-card-bridge API v2 的卡片模块：在卡片桥的设置网页配置 Codex、Kimi Code、DeepSeek、小米 MiMo、Cursor、Antigravity 与 OpenCode Go，勾选最多四个来源，使用既有 Canvas 卡片查看用量。
 
 ## 安装与使用
 
 1. 安装 **rear-card-bridge v1.3.1 或更新版本**，支持模块网页登录会话、统一后台调度与原生图片多选。系统 Android System WebView 需支持 `MULTI_PROFILE`。
 2. 在卡片桥中导入 Git 仓库 <https://github.com/finall1008/xiaomi-backscreen-ai-token>，分支 `main`。导入器读取仓库根目录的 [module.json](<module.json>)、编译后的经典卡片 `card/`、静态 `webroot/` 与 `background/`。手机上不执行 npm，也不运行构建。
 3. 也可改用「安装 ZIP 模块」，从 [Releases](<https://github.com/finall1008/xiaomi-backscreen-ai-token/releases>) 下载已发布的模块 ZIP 并安装。ZIP 根目录同样是 `module.json` 与上述三份静态产物。
-4. 打开模块设置：Codex 使用设备码登录；Kimi Code / DeepSeek 填写 API Key；MiMo / Cursor 点「网页登录」，登录完成关闭窗口，再点「检查登录」。每个已配置来源可勾选「在背屏显示」，最多四个；取消勾选不清除登录或用量。Codex 需要在 ChatGPT 设置 → 安全中允许设备码登录。
+4. 打开模块设置：Codex 使用设备码登录；Kimi Code / DeepSeek / OpenCode Go 填写 API Key；MiMo / Cursor 点「网页登录」，登录完成关闭窗口，再点「检查登录」。每个已配置来源可勾选「在背屏显示」，最多四个；取消勾选不清除登录或用量。Codex 需要在 ChatGPT 设置 → 安全中允许设备码登录。
 5. 在桥中将模块安装为独立背屏卡，然后从背屏应用列表打开。后续数据和脚本更新无需反复导出 ZIP；静态资源变化时按桥提示更新卡片资源。
 6. 设置页可查看各来源详情、手动刷新、清除授权，并预览卡片。背屏支持点击来源进入详情、左右滑动切页、点击详情标题返回总览；简洁页与总览下拉刷新全部已配置来源，详情页在顶部下拉只刷新当前来源。
 7. 在「卡片外观」中可多选 JPEG / PNG / WebP、逐张移除或恢复默认背景；原生多选需要包含文件多选支持的桥版本。图片自动裁切为背屏比例，生成清晰和模糊两份 JPEG。多张按添加顺序在卡片启动、AOD 或完全熄屏后恢复时轮换，数据刷新不切换壁纸；左右切页立即同步保存当前页，重建运行环境时先恢复页码。最左侧简洁页只显示来源图标与用量比例，其余留给壁纸。图库没有固定张数限制，图片与用量的完整常显快照须小于宿主的 800K 上限。
 8. 需要休眠期间取数时，在桥中开启后台刷新并统一设置该模块周期（默认 30 分钟，最短 5 分钟）。宿主通过系统 JobScheduler 调度，更新共享快照供背屏下次加载时读取，不主动唤醒背屏。
 
-同一模块 id 更新时必须增加 [模块描述](<module.json>) 的 `versionCode`。当前 `version` 为 `0.5.2`，`versionCode` 为 `13`。桥保留模块 storage 和 config。
+同一模块 id 更新时必须增加 [模块描述](<module.json>) 的 `versionCode`。当前 `version` 为 `0.6.0`，`versionCode` 为 `14`。桥保留模块 storage 和 config。
 
 ## 功能
 
@@ -25,6 +25,7 @@
 | 小米 MiMo | 独立窗口网页登录、检查登录、用量与套餐查询；设置页与背屏通过 `cookies:true` 共用模块会话 |
 | Cursor | 官网网页登录、套餐及个人本期额度、额外消费；团队共享额度明确标注，缺少个人上限时不推算剩余额度；无需管理员密钥 |
 | Antigravity | Google OAuth PKCE 授权码 / 回调链接或 Refresh Token 登录、Gemini、独立 Argon 与 Claude/GPT 池 5 小时及周限额、支持切换背屏总览优先展示的模型池 |
+| OpenCode Go | 工作区个人 API Key、5 小时 / 周 / 月已用额度与重置时间；GO 徽章表示服务系列，按量计费余额暂未接入 |
 | 背屏展示 | 设置页勾选最多四个已配置来源，保持 2×2 总览；隐藏来源仍可在设置页查看、刷新，后台仍取数 |
 | MiMo 会话恢复 | 平台返回 401 时尝试现有 Passport 会话恢复；需交互登录时提示重新登录，后台不开窗口 |
 | 刷新 | 设置页保存凭据后查询、手动刷新；背屏首页下拉刷新全部来源，详情下拉只刷新当前来源；失败保留上次成功数据 |
@@ -37,11 +38,15 @@
 
 Codex 使用官方客户端设备码与 ChatGPT 用量接口。Cursor 使用官网未公开的 `GET https://cursor.com/api/usage-summary`，不是官方 Admin API；兼容个人套餐和接口返回的团队席位个人预算／共享池，缺少额度不显示为 0。Cursor 会话过期后需重新网页登录，不自动续期；手机 WebView 的登录与团队 SSO 需本人账号实测。接口及账号可用性可能随服务端变化，离线测试不能替代本人账号实测。
 
+OpenCode Go 使用官方客户端同源的 `GET https://opencode.ai/zen/go/v1/usage`，凭据使用 Go 所在工作区的个人 API Key。每个窗口展示已用百分比，重置时间直接取接口返回值；Go / Go Plus / Go Teams 统一显示 GO 系列徽章。401 提示 Key 失效，未订阅和访问受限分别提示；刷新失败保留上次数据。请求经原生桥发送且不携带 Cookie，不调用模型推理接口。真实账号的设置页查询、背屏与后台刷新需在手机验收。
+
+OpenCode 静态图标来自 [官方仓库](<https://github.com/anomalyco/opencode>)，MIT 许可随 assets 安装；升级后请更新卡片资源并重新应用。
+
 Cursor 静态图标来自 [Lobe Icons](<https://github.com/lobehub/lobe-icons>)，随载体资源安装；升级增加此图标后需更新载体并重新应用。
 
 ## 数据与凭据
 
-Codex 令牌和 Kimi / DeepSeek 密钥保存在卡片桥本机私有 `bridge.storage` 中，暂不加密。MiMo / Cursor 网页登录的 Cookie 由宿主保存在本模块独立 WebView Profile，业务存储只记录 `{type:'webview'}` 标记。凭据、响应头与签名登录地址不进入模块 ZIP、日志、预览消息或常显快照，不发送模型推理请求。
+Codex 令牌和 Kimi / DeepSeek / OpenCode 密钥保存在卡片桥本机私有 `bridge.storage` 中，暂不加密。MiMo / Cursor 网页登录的 Cookie 由宿主保存在本模块独立 WebView Profile，业务存储只记录 `{type:'webview'}` 标记。凭据、响应头与签名登录地址不进入模块 ZIP、日志、预览消息或常显快照，不发送模型推理请求。
 
 清除授权会移除该来源凭据和缓存，并通知背屏重读数据。MiMo / Cursor「移除来源」仅停用来源并清除业务缓存，不清除 Profile 中的网页登录会话；桥未提供清除会话 API。卸载模块会删除模块数据与 Profile。旧模块保存的手动 Cookie 仍可查询，成功「检查登录」后切换到 Profile 会话，不再复制 Cookie。
 

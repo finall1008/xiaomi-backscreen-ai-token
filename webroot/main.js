@@ -8,7 +8,7 @@
  * 不发送任何真实请求，也不演示数据。
  *
  * 职责：
- *   - Kimi Code / DeepSeek 保存 API Key 并刷新；Codex 设备码登录（可取消、外链验证、手动复制）；
+ *   - Kimi Code / DeepSeek / OpenCode 保存 API Key 并刷新；Codex 设备码登录（可取消、外链验证、手动复制）；
  *     MiMo 与 Cursor 使用桥的独立登录窗口，关闭窗口后检查登录；Cookie 留在宿主的模块 Profile 中。
  *     MiMo 仍先获取签名登录入口；Cursor 直接打开用量页，没有签名入口。
  *   - 每个来源可勾选是否在背屏显示，最多 4 个，勾选后自动保存；取消勾选只隐藏预览与背屏，不清除凭据或网页会话。
@@ -19,8 +19,8 @@
 (function () {
   'use strict';
 
-  /** MiMo / Cursor / Antigravity 通过原生网络请求；其他来源保持 WebView fetch。 */
-  var WEBUI_REFRESHABLE = { codex: true, kimi: true, deepseek: true, mimo: true, cursor: true, antigravity: true };
+  /** MiMo / Cursor / Antigravity / OpenCode 通过原生网络请求；其他来源保持 WebView fetch。 */
+  var WEBUI_REFRESHABLE = { codex: true, kimi: true, deepseek: true, mimo: true, cursor: true, antigravity: true, opencode: true };
   var CURSOR_USAGE_PAGE = 'https://cursor.com/dashboard/usage';
   var MAX_CARD_PROVIDERS = 4;
 
@@ -270,9 +270,9 @@
         '</div>' +
         '<p class="muted">移除只清除本模块的来源与用量缓存，不清除网页登录会话。</p>';
     }
-    return '' +
+    return (id === 'opencode' ? '<p class="notice">填写 Go 所在工作区的个人 API Key，查看 5 小时、周、月额度。此来源展示 Go 额度，套餐徽章统一显示 GO。</p>' : '') +
       '<label class="field"><span>API Key</span>' +
-      '  <input id="secret-' + id + '" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="sk-…">' +
+      '  <input id="secret-' + id + '" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="' + (id === 'opencode' ? '粘贴 OpenCode API Key' : 'sk-…') + '">' +
       '</label>' +
       '<div class="actions">' +
       '  <button id="save-' + id + '" type="button" class="btn btn-primary">保存密钥</button>' +

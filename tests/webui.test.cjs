@@ -125,6 +125,7 @@ function makeEnvironment({ bridge, core }) {
     controls.push(document.getElementById(id));
   }
   vm.createContext(sandbox);
+  if (bridge && !core) vm.runInContext(fs.readFileSync(path.join(root, 'src/shared/core.js'), 'utf8'), sandbox);
   vm.runInContext(fs.readFileSync(path.join(root, 'src/shared/appearance.js'), 'utf8'), sandbox);
   vm.runInContext(read('main.js'), sandbox, { filename: 'main.js' });
   return { elements, controls, posted, fetchCalls, state };
@@ -210,6 +211,50 @@ test('桥可用：client 接 bridge.storage、预览 postMessage、fetch 传输'
     error => error.code === 'TIMEOUT' && !/aborted/.test(error.message)
   );
   assert.equal(refreshCalls.card, 0, '仅读取状态不会触发卡片刷新');
+});
+
+test('OpenCode 保存、手动刷新与清除走真实核心和原生网络，预览不携带密钥', async () => {
+  const data = {};
+  const requests = [];
+  let notifications = 0;
+  const bridge = {
+    storage: {
+      get: async key => data[key] ?? null,
+      set: async (key, value) => { data[key] = value; },
+      remove: async key => { delete data[key]; }
+    },
+    net: { request: async options => {
+      requests.push(options);
+      assert.equal(options.url, 'https://opencode.ai/zen/go/v1/usage');
+      assert.equal(options.cookies, false);
+      assert.equal(options.headers.Authorization, 'Bearer test-opencode-key');
+      return { status: 200, body: JSON.stringify({ usage: {
+        rolling: { status: 'ok', percent: 12.5, resetsAt: '2026-11-10T20:30:00+08:00' }
+      } }) };
+    } },
+    card: { requestRefresh() { notifications++; } }
+  };
+  const env = makeEnvironment({ bridge });
+  await tick();
+  assert.match(env.elements.providers.innerHTML, /Go 所在工作区的个人 API Key/);
+  env.elements['secret-opencode'].value = 'test-opencode-key';
+  env.elements['save-opencode'].listeners.click[0]();
+  await tick();
+  assert.equal(data['auth.opencode'], 'test-opencode-key');
+  assert.equal(JSON.parse(data['usage.opencode']).windows[0].usedPercent, 12.5);
+  assert.equal(env.elements['secret-opencode'].value, '');
+  assert.equal(requests.length, 1);
+  assert.equal(notifications, 1);
+  assert.equal(env.fetchCalls.length, 0);
+  assert.ok(!JSON.stringify(env.posted).includes('test-opencode-key'));
+  env.elements['refresh-opencode'].listeners.click[0]();
+  await tick();
+  assert.equal(requests.length, 2);
+  env.elements['clear-opencode'].listeners.click[0]();
+  await tick();
+  assert.equal(data['auth.opencode'], undefined);
+  assert.equal(data['usage.opencode'], undefined);
+  assert.equal(notifications, 3);
 });
 
 test('保存密钥立即查询；MiMo 开窗后检查；设备码终态失败不重复轮询', async () => {

@@ -135,14 +135,15 @@ test('providers contract, secret lifecycle and state rows', async () => {
     { id: 'deepseek', name: 'DeepSeek', logoAsset: 'assets/deepseek.png' },
     { id: 'mimo', name: '小米 MiMo', logoAsset: 'assets/mimo.png' },
     { id: 'cursor', name: 'Cursor', logoAsset: 'assets/cursor.png' },
-    { id: 'antigravity', name: 'Antigravity', logoAsset: 'assets/antigravity.png' }
+    { id: 'antigravity', name: 'Antigravity', logoAsset: 'assets/antigravity.png' },
+    { id: 'opencode', name: 'OpenCode', logoAsset: 'assets/opencode.png' }
   ]);
 
   const storage = makeStorage();
   const client = core.create({ storage, request: scripted(() => { throw new Error('unused'); }) });
 
   const rows = await client.state();
-  assert.equal(rows.length, 6);
+  assert.equal(rows.length, 7);
   for (const row of rows) {
     assert.equal(row.configured, false);
     assert.equal(row.snapshot, null);
@@ -155,7 +156,7 @@ test('providers contract, secret lifecycle and state rows', async () => {
   await assert.rejects(() => client.refresh('antigravity'), { code: 'AUTH_REQUIRED', message: '尚未登录' });
   await assert.rejects(() => client.refresh('unknown'), { code: 'ERROR' });
 
-  // saveSecret 只接受 kimi / deepseek / mimo，trim 后不能为空。
+  // saveSecret 只接受 kimi / deepseek / mimo / opencode，trim 后不能为空。
   await assert.rejects(() => client.saveSecret('codex', 'sk-x'), { code: 'ERROR' });
   await assert.rejects(() => client.saveSecret('antigravity', 'sk-x'), { code: 'ERROR' });
   await assert.rejects(() => client.saveSecret('unknown', 'sk-x'), { code: 'ERROR' });
@@ -171,13 +172,111 @@ test('providers contract, secret lifecycle and state rows', async () => {
   await client.saveSecret('mimo', 'session=abc');
   const configured = await client.state();
   assert.deepEqual(plain(configured.map(row => [row.id, row.configured])),
-    [['codex', false], ['kimi', true], ['deepseek', true], ['mimo', true], ['cursor', false], ['antigravity', false]]);
+    [['codex', false], ['kimi', true], ['deepseek', true], ['mimo', true], ['cursor', false], ['antigravity', false], ['opencode', false]]);
   assert.ok(!JSON.stringify(configured).includes('secret'), 'state 不返回凭据');
 
   await client.clear('kimi');
   await client.clear('codex');
   assert.deepEqual(Object.keys(storage.data).sort(), ['auth.deepseek', 'auth.mimo']);
   await assert.rejects(() => client.clear('unknown'), { code: 'ERROR' });
+});
+
+const OPENCODE_USAGE = JSON.stringify({ usage: {
+  rolling: { status: 'ok', percent: 12.5, resetsAt: '2026-11-10T20:30:00+08:00' },
+  weekly: { status: 'rate-limited', percent: 100, resetsAt: '2026-11-16T00:00:00Z' },
+  monthly: { status: 'ok', percent: 42, resetsAt: '2026-12-01T05:27:23.880Z' }
+} });
+
+test('OpenCode key query maps percentages and reset times into display-only cached windows', async () => {
+  const { core } = loadCore();
+  const storage = makeStorage();
+  const request = scripted(options => {
+    assert.equal(options.url, 'https://opencode.ai/zen/go/v1/usage');
+    assert.equal(options.method, 'GET');
+    assert.equal(options.cookies, false);
+    assert.equal(options.headers.Authorization, 'Bearer test-opencode-key');
+    assert.equal(options.headers.Accept, 'application/json');
+    return { status: 200, body: OPENCODE_USAGE };
+  });
+  const client = core.create({ storage, request, now: () => 123000 });
+  await client.saveSecret('opencode', '  test-opencode-key  ');
+  const snapshot = await client.refresh('opencode');
+  assert.deepEqual(plain(snapshot), {
+    id: 'opencode', plan: 'Go', updatedAt: 123,
+    windows: [
+      { title: '5 小时额度', usedPercent: 12.5, windowSeconds: 18000, resetAt: 1794313800 },
+      { title: '本周额度', usedPercent: 100, windowSeconds: 604800, resetAt: 1794787200 },
+      { title: '本月额度', usedPercent: 42, windowSeconds: 2592000, resetAt: 1796102843 }
+    ],
+    balance: null, credits: null, booster: null, hint: null, details: ['本周额度已达上限']
+  });
+  const reloaded = core.create({ storage, request });
+  const row = (await reloaded.state()).find(row => row.id === 'opencode');
+  assert.equal(row.configured, true);
+  assert.deepEqual(plain(row.snapshot), plain(snapshot));
+  const config = await reloaded.cardConfig();
+  assert.equal(config.providers[0].logoAsset, 'assets/opencode.png');
+  assert.equal(config.providers[0].windows[0].usedPercent, 12.5);
+  assert.ok(!JSON.stringify([row, config, storage.data['usage.opencode']]).includes('test-opencode-key'));
+  await reloaded.setProviderVisible('opencode', false);
+  assert.deepEqual(plain((await reloaded.cardConfig()).providers), []);
+  assert.equal((await reloaded.state()).find(row => row.id === 'opencode').configured, true);
+  assert.equal(request.calls.length, 1);
+});
+
+test('OpenCode partial windows stay missing and malformed responses fail without inventing zero usage', () => {
+  const parse = loadCore().core.parsers.parseOpenCodeUsage;
+  const partial = parse(JSON.stringify({ usage: { monthly: { percent: 0, resetsAt: 'invalid' } } }), 1);
+  assert.equal(partial.windows.length, 1);
+  assert.equal(partial.windows[0].usedPercent, 0);
+  assert.equal(partial.windows[0].resetAt, null);
+  for (const body of ['<html>challenge</html>', '{}', '{"usage":{"rolling":{"percent":null}}}']) {
+    assert.throws(() => parse(body, 1), { code: 'ERROR' });
+  }
+});
+
+test('OpenCode auth, subscription, access and upstream failures keep the last successful cache and safe status', async () => {
+  const { core } = loadCore();
+  const storage = makeStorage({ 'auth.opencode': 'test-opencode-key' });
+  let response = { status: 200, body: OPENCODE_USAGE };
+  const client = core.create({ storage, request: async () => response });
+  await client.refresh('opencode');
+  const cached = storage.data['usage.opencode'];
+  for (const [status, body, code, message] of [
+    [401, 'test-opencode-key', 'AUTH_REQUIRED', 'OpenCode API Key 无效或已过期'],
+    [403, JSON.stringify({ error: { type: 'EntitlementError', message: 'test-opencode-key' } }), 'ERROR', '该 API Key 所属账号或工作区未开通 OpenCode Go'],
+    [403, '{"cloudflare_error":true}', 'ERROR', 'OpenCode 访问受限，请检查网络或 API Key 权限'],
+    [503, 'test-opencode-key', 'ERROR', 'OpenCode 读取失败（503）'],
+    [200, '<html>test-opencode-key</html>', 'ERROR', 'OpenCode 用量响应格式错误']
+  ]) {
+    response = { status, body };
+    await assert.rejects(client.refresh('opencode'), { code, message });
+    assert.equal(storage.data['usage.opencode'], cached);
+    assert.equal(storage.data['auth.opencode'], 'test-opencode-key');
+    assert.equal(JSON.parse(storage.data['status.opencode']).message, message);
+    assert.ok(!JSON.stringify(await client.state()).includes('test-opencode-key'));
+  }
+  response = { status: 200, body: OPENCODE_USAGE };
+  await client.refresh('opencode');
+  assert.equal(storage.data['status.opencode'], undefined);
+});
+
+test('OpenCode clear and replaced keys discard in-flight query results', async () => {
+  const { core } = loadCore();
+  for (const replace of [false, true]) {
+    const storage = makeStorage({ 'auth.opencode': 'old-test-key' });
+    let release;
+    const gate = new Promise(resolve => { release = resolve; });
+    const request = scripted(async () => { await gate; return { status: 200, body: OPENCODE_USAGE }; });
+    const client = core.create({ storage, request });
+    const pending = client.refresh('opencode');
+    await waitFor(() => request.calls.length === 1);
+    if (replace) await client.saveSecret('opencode', 'new-test-key');
+    else await client.clear('opencode');
+    release();
+    await assert.rejects(pending, { code: 'CANCELLED' });
+    assert.deepEqual(storage.data, replace ? { 'auth.opencode': 'new-test-key' } : {});
+  }
 });
 
 test('kimi official wire parses5h/week windows, booster and plan via me', async () => {
@@ -1100,7 +1199,7 @@ test('refreshAll isolates failures and returns full state', async () => {
   const client = core.create({ storage, request, now: () => 40000 });
 
   const rows = await client.refreshAll();
-  assert.deepEqual(plain(rows.map(row => row.id)), ['codex', 'kimi', 'deepseek', 'mimo', 'cursor', 'antigravity']);
+  assert.deepEqual(plain(rows.map(row => row.id)), ['codex', 'kimi', 'deepseek', 'mimo', 'cursor', 'antigravity', 'opencode']);
   const kimi = rows.find(row => row.id === 'kimi');
   assert.equal(kimi.status.code, 'ERROR');
   assert.equal(kimi.status.message, 'Kimi Code 读取失败（500）');

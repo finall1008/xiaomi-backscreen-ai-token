@@ -4,7 +4,7 @@
 
 ## 当前模块布局
 
-模块 id 为 `dev.finall.aitoken`，`version` 为 `0.5.1`，`versionCode` 为 `12`，声明 `network` / `storage`。Git 导入读取仓库根目录，手机不执行 npm：
+模块 id 为 `dev.finall.aitoken`，`version` 为 `0.6.0`，`versionCode` 为 `14`，声明 `network` / `storage`。Git 导入读取仓库根目录，手机不执行 npm：
 
 - [module.json](<../module.json>)
 - `card/`：编译后的经典卡片 JS（async/await 已转为生成器）与静态 assets
@@ -15,7 +15,7 @@
 
 运行时约定：
 
-- 背屏用 `bridge.net.request`；设置页的 MiMo / Cursor 请求也走原生桥，Codex / Kimi / DeepSeek 保持 WebView fetch。
+- 背屏用 `bridge.net.request`；设置页的 MiMo / Cursor / Antigravity / OpenCode 请求也走原生桥，Codex / Kimi / DeepSeek 保持 WebView fetch。
 - 背屏与预览只展示 `display.providers` 勾选的最多四个已配置来源；无偏好时默认前四个已配置来源。隐藏不清除凭据，不影响设置页及后台取数。
 - MiMo 所有请求显式传入 `cookies`：网页登录、会话查询 / 恢复用 `true`；获取新的签名登录入口、兼容旧手动 Cookie 用 `false`。设置页以是否存在此选项区分原生与 fetch。
 - 核心以 `AiUsageCore.create({storage, request, allowTokenRefresh})` 注入存储和网络。
@@ -32,7 +32,7 @@
 | 键 | 内容 |
 | --- | --- |
 | `auth.codex` | `{accessToken, refreshToken, idToken, accountId}` |
-| `auth.kimi` / `auth.deepseek` | API Key 字符串 |
+| `auth.kimi` / `auth.deepseek` / `auth.opencode` | API Key 字符串 |
 | `auth.mimo` | `{type:'webview'}`：已检查的模块 Profile 会话；兼容旧手动 Cookie 字符串 |
 | `auth.cursor` | `{type:'webview'}`：已检查的 Cursor 官网会话，不保存 Cookie 或管理员密钥 |
 | `auth.antigravity` | Google OAuth 访问令牌、刷新令牌及项目与套餐信息，仅留本机 |
@@ -75,6 +75,14 @@ AOD 恢复监听 `visibilitychange`。原生直接 OFF/ON 不发送该事件，�
 3. 团队席位优先读取 `individualUsage.overall` 个人预算；其他套餐读取 `individualUsage.plan`。只有接口返回比例或明确的已用／正数上限才显示比例；共享池窗口标为「团队共享额度」，不冒充个人额度。`details` 显示个人／套餐消费与个人额外消费（接口金额按美分转换），不把花费当作余额或 Credits。
 4. 401 / 403 报告授权或权限失效并保留成功缓存。后台不打开登录窗口，不自动续期。移除来源不清除 Profile 会话；该行为与 MiMo 相同。
 5. 这是 Cursor 官网内部接口，不是企业管理员 Admin API；真实账号及 Android WebView / SSO 登录需设备验收。
+
+## OpenCode Go 查询
+
+使用 Go 所在工作区的个人 API Key，保存在 `auth.opencode`。设置页、背屏与后台统一通过原生桥请求 `GET https://opencode.ai/zen/go/v1/usage`，携带 Bearer 鉴权并显式设置 `cookies:false`。
+
+`usage.rolling` / `weekly` / `monthly` 分别映射到 5 小时 / 周 / 月额度；`percent` 直接作为已用百分比，`resetsAt` 转为 Unix 秒。首页优先展示 5 小时窗口，详情沿用纵向滚动布局。GO 徽章表示服务系列，接口没有返回具体套餐档位和按量余额。
+
+401 提示 Key 失效；403 的 `EntitlementError` 提示未开通 Go，其他 403 提示访问受限。失败保留上次缓存，状态仅保存安全文案。`details` 保存达限窗口提示。
 
 ## 后台刷新
 

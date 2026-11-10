@@ -110,7 +110,7 @@ test('ZIP contains an API v2 module, static logos and compiled classic card scri
   assert.ok(!text('background/main.js').includes('getContext('), 'background does not draw Canvas');
   const scripts = [...text('webroot/index.html').matchAll(/<script src="([^"]+)"/g)].map(match => match[1]);
   assert.deepEqual(scripts, ['bridge-shim.js', 'core.js', 'appearance.js', 'wallpapers.js', 'main.js']);
-  for (const id of ['openai', 'kimi', 'deepseek', 'mimo', 'cursor', 'antigravity']) {
+  for (const id of ['openai', 'kimi', 'deepseek', 'mimo', 'cursor', 'antigravity', 'opencode']) {
     assert.deepEqual(Buffer.from(entries[`card/assets/${id}.png`]), fs.readFileSync(`prototype/assets/${id}.png`));
   }
   assert.ok(text('webroot/core.js').includes('async '), 'browser source stays native async');
@@ -207,6 +207,54 @@ test('compiled card queries Cursor through the profile and displays its personal
   assert.equal(config.providers[0].id, 'cursor');
   assert.equal(config.providers[0].windows[0].usedPercent, 25);
   assert.ok(!JSON.stringify(config).includes('webview'));
+});
+
+test('OpenCode background snapshot feeds the compiled card first frame and manual refresh', async () => {
+  const key = 'test-opencode-key';
+  const data = { 'auth.opencode': key };
+  let saved;
+  let percent = 13;
+  const request = async options => {
+    assert.equal(options.url, 'https://opencode.ai/zen/go/v1/usage');
+    assert.equal(options.headers.Authorization, 'Bearer ' + key);
+    assert.equal(options.cookies, false);
+    return { status: 200, body: JSON.stringify({ usage: {
+      rolling: { status: 'ok', percent, resetsAt: '2026-11-11T00:00:00Z' },
+      weekly: { status: 'ok', percent: 25, resetsAt: '2026-11-16T00:00:00Z' },
+      monthly: { status: 'ok', percent: 42, resetsAt: '2026-12-01T00:00:00Z' }
+    } }) };
+  };
+  const context = vm.createContext({ bridge: {
+    storage: {
+      get: async name => data[name] ?? null,
+      set: async (name, value) => { data[name] = value; },
+      remove: async name => { delete data[name]; }
+    },
+    net: { request }, card: { saveSnapshot: async value => { saved = JSON.parse(JSON.stringify(value)); } }
+  } });
+  context.window = context;
+  vm.runInContext(text('background/main.js'), context);
+  await context.refresh();
+  assert.equal(saved.config.providers[0].id, 'opencode');
+  assert.equal(saved.config.providers[0].windows.length, 3);
+  assert.ok(!JSON.stringify(saved).includes(key));
+  const runtime = card(snapshot(0), { initialSnapshot: { ...saved, page: 'minimal' }, respond: request });
+  runtime.flush();
+  assert.ok(runtime.texts.includes('13%'), 'AOD 首帧读取后台快照');
+  assert.equal(runtime.requests(), 0);
+  delete runtime.data['auth.deepseek'];
+  delete runtime.data['usage.deepseek'];
+  Object.assign(runtime.data, data);
+  runtime.release();
+  for (let i = 0; i < 10; i++) await tick();
+  percent = 34;
+  runtime.pull();
+  for (let i = 0; i < 15; i++) await tick();
+  runtime.flush();
+  assert.equal(runtime.requests(), 1);
+  const refreshed = runtime.saved.at(-1);
+  assert.equal(refreshed.config.providers[0].windows[0].usedPercent, 34);
+  assert.ok(!JSON.stringify(refreshed).includes(key));
 });
 
 test('background reuses Cursor login and applies the same saved display selection', async () => {

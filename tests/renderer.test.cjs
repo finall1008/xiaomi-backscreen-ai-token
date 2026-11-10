@@ -106,6 +106,32 @@ function createCard(config, frameOnly = true) {
   };
 }
 
+test('OpenCode overview chooses five-hour usage and detail scroll reaches the monthly window', () => {
+  const view = createCard({ providers: [
+    { id: 'opencode', name: 'OpenCode', plan: 'Go', logoAsset: 'assets/opencode.png', windows: [
+      win('5 小时额度', 18000, 13), win('本周额度', 604800, 25), win('本月额度', 2592000, 42)
+    ] },
+    { id: 'deepseek', name: 'DeepSeek', balance: { amount: 25, currency: 'CNY' } }
+  ] });
+  assert.ok(view.has('13'));
+  view.card.restorePage('minimal');
+  view.flushFrame();
+  assert.ok(view.has('13%'));
+  assert.ok(!view.has('42%'));
+  view.card.restorePage('provider:opencode');
+  view.flushFrame();
+  assert.ok(view.has('GO'));
+  assert.ok(view.has('5 小时额度'));
+  assert.ok(view.has('本周额度'));
+  view.event('pointerdown', 450, 500);
+  view.event('pointermove', 450, 240);
+  view.event('pointerup', 450, 240);
+  view.settle();
+  assert.ok(view.has('本月额度'));
+  assert.ok(view.has('42'));
+  assert.ok(view.images.some(img => img.src === 'assets/opencode.png'));
+});
+
 test('Antigravity overview uses the selected Argon weekly quota instead of a shorter generic window', () => {
   const weekly = win('Gemini 4 Argon 本周', 604800, 94);
   const view = createCard({ providers: [
