@@ -58,7 +58,8 @@ jobs:
           body: |
             AI 用量背屏模块（rear-card-bridge API v2），支持 Codex、Kimi Code、DeepSeek、小米 MiMo、Cursor、Antigravity 与 OpenCode Go。
 
-            - 新增 OpenCode Go：个人 API Key 接入，展示 5 小时、周、月已用额度与重置时间。
+            - 修复 Antigravity 总览长期显示 0%：双窗口额度改取优先池里已用比例最高的窗口，5 小时窗口归零时仍能看到周限额的真实用量。
+            - 优先池没有对应窗口时（例如接口不再返回 Argon 分组）退回全部窗口的最高用量，总览不再留空白。
             - 设置页、背屏与后台共用用量逻辑；失败保留缓存，凭据仅保存在桥本机私有存储。
             - 可从仓库 main 导入：https://github.com/finall1008/xiaomi-backscreen-ai-token，也可下载本 Release ZIP 安装。
             - 请搭配卡片桥 v1.3.1 或更新版本，以使用原生图片多选；图库没有固定张数限制，完整常显快照须在宿主 800K 上限内。
