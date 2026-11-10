@@ -1299,6 +1299,31 @@
     return indexed.map(function (item) { return item.win; });
   }
 
+  /**
+   * 总览只展示一个数字：优先池里已用比例最高的窗口。
+   * Antigravity 现在是 5 小时 + 周限额双窗口，5 小时窗口每 5 小时归零，
+   * 取最短窗口会让背屏长期显示 0%；优先池当前没有窗口（例如 Argon 分组
+   * 已不在接口返回里）时退回全部窗口，避免整卡没有数字。
+   */
+  function antigravityPrimaryWindow(windows, preferredPool) {
+    if (!Array.isArray(windows) || windows.length === 0) return null;
+    var target = normalizeAntigravityPool(preferredPool);
+    var inPool = [];
+    var usable = [];
+    for (var i = 0; i < windows.length; i++) {
+      var win = windows[i];
+      if (!win || typeof win.usedPercent !== 'number') continue;
+      usable.push(win);
+      if (windowPoolOfTitle(win.title) === target) inPool.push(win);
+    }
+    var candidates = inPool.length ? inPool : usable;
+    var best = null;
+    for (var j = 0; j < candidates.length; j++) {
+      if (best === null || candidates[j].usedPercent > best.usedPercent) best = candidates[j];
+    }
+    return best;
+  }
+
   function tierLabel(tier) {
     if (typeof tier === 'string') return textValue(tier);
     if (!isObject(tier)) return null;
@@ -2316,10 +2341,7 @@
           return wire;
         });
         if (provider.id === 'antigravity') {
-          var pool = await readAntigravityPool();
-          entry.primaryWindow = entry.windows.filter(function (win) {
-            return windowPoolOfTitle(win.title) === pool;
-          })[0] || null;
+          entry.primaryWindow = antigravityPrimaryWindow(entry.windows, await readAntigravityPool());
         }
         if (snapshot !== null) {
           if (snapshot.balance !== null) {

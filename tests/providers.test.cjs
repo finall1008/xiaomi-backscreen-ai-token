@@ -1572,3 +1572,50 @@ test('Antigravity PKCE login, refresh token login, pool preference and 401 token
   await fallbackClient.setAntigravityPool('argon');
   assert.equal((await fallbackClient.cardConfig()).providers[0].primaryWindow.title, 'Gemini Argon 配额');
 });
+
+test('Antigravity overview shows the most used window and never blanks on a missing pool', async () => {
+  const { core } = loadCore();
+  const summary = {
+    groups: [
+      {
+        displayName: 'Gemini Models',
+        buckets: [
+          { bucketId: 'gemini-5h', window: '5h', remainingFraction: 1, resetTime: '2026-11-11T06:00:00Z' },
+          { bucketId: 'gemini-weekly', window: 'weekly', remainingFraction: 0.4, resetTime: '2026-11-16T08:00:00Z' }
+        ]
+      },
+      {
+        displayName: 'Claude and GPT models',
+        buckets: [
+          { bucketId: '3p-5h', window: '5h', remainingFraction: 0.9, resetTime: '2026-11-11T06:00:00Z' },
+          { bucketId: '3p-weekly', window: 'weekly', remainingFraction: 0.2, resetTime: '2026-11-17T08:00:00Z' }
+        ]
+      }
+    ]
+  };
+  const storage = makeStorage({
+    'auth.antigravity': JSON.stringify({ accessToken: 'agy-access', refreshToken: '1//agy', projectId: 'gen-lang-client-999', plan: 'Google AI Ultra' })
+  });
+  const request = scripted(options => {
+    if (options.url.endsWith(':loadCodeAssist')) {
+      return { status: 200, body: JSON.stringify({ cloudaicompanionProject: 'gen-lang-client-999', currentTier: { name: 'Google AI Ultra' } }) };
+    }
+    if (options.url.endsWith(':retrieveUserQuotaSummary')) {
+      return { status: 200, body: JSON.stringify(summary) };
+    }
+    throw new Error('unexpected ' + options.url);
+  });
+  const client = core.create({ storage, request, now: () => 1800000000000 });
+  await client.refresh('antigravity');
+
+  // 5 小时窗口刚重置为 0%，总览必须展示已用 60% 的周限额。
+  const gemini = (await client.cardConfig()).providers.find(p => p.id === 'antigravity');
+  assert.equal(gemini.primaryWindow.title, 'Gemini 本周');
+  assert.equal(gemini.primaryWindow.usedPercent, 60);
+
+  // 接口不再返回 Argon 分组时，选中的 Argon 池不能把总览变成空白。
+  await client.setAntigravityPool('argon');
+  const argon = (await client.cardConfig()).providers.find(p => p.id === 'antigravity');
+  assert.equal(argon.primaryWindow.title, 'Claude/GPT 本周');
+  assert.equal(argon.primaryWindow.usedPercent, 80);
+});
