@@ -1463,7 +1463,7 @@ test('Antigravity PKCE login, refresh token login, pool preference and 401 token
         })
       };
     }
-    if (options.url === 'https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary') {
+    if (options.url === 'https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary') {
       assert.equal(JSON.parse(options.body).project, 'gen-lang-client-999');
       return { status: 200, body: JSON.stringify(ANTIGRAVITY_SUMMARY) };
     }
@@ -1545,10 +1545,10 @@ test('Antigravity PKCE login, refresh token login, pool preference and 401 token
       if (options.url.endsWith(':loadCodeAssist')) {
         return { status: 200, body: JSON.stringify({ currentTier: { name: 'Standard' } }) };
       }
-      if (options.url.endsWith(':retrieveUserQuotaSummary')) {
+      if (options.url === 'https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary') {
         return { status: 200, body: JSON.stringify({ groups: [] }) };
       }
-      if (options.url.endsWith(':fetchAvailableModels')) {
+      if (options.url === 'https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels') {
         return {
           status: 200,
           body: JSON.stringify({

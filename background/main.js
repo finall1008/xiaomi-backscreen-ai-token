@@ -71,8 +71,9 @@
     'openid'
   ].join(' ');
   var ANTIGRAVITY_LOAD_URL = 'https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist';
-  var ANTIGRAVITY_QUOTA_SUMMARY_URL = 'https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary';
-  var ANTIGRAVITY_MODELS_URL = 'https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels';
+  // 个人 Antigravity 套餐的用量与模型配额统一读取 daily 后端。
+  var ANTIGRAVITY_QUOTA_SUMMARY_URL = 'https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary';
+  var ANTIGRAVITY_MODELS_URL = 'https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels';
   var ANTIGRAVITY_USER_AGENT = 'antigravity/hub/2.24.0';
   var ANTIGRAVITY_POOL_KEY = 'display.antigravityPool';
 

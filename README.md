@@ -13,7 +13,7 @@
 7. 在「卡片外观」中可多选 JPEG / PNG / WebP、逐张移除或恢复默认背景；原生多选需要包含文件多选支持的桥版本。图片自动裁切为背屏比例，生成清晰和模糊两份 JPEG。多张按添加顺序在卡片启动、AOD 或完全熄屏后恢复时轮换，数据刷新不切换壁纸；左右切页立即同步保存当前页，重建运行环境时先恢复页码。最左侧简洁页只显示来源图标与用量比例，其余留给壁纸。图库没有固定张数限制，图片与用量的完整常显快照须小于宿主的 800K 上限。
 8. 需要休眠期间取数时，在桥中开启后台刷新并统一设置该模块周期（默认 30 分钟，最短 5 分钟）。宿主通过系统 JobScheduler 调度，更新共享快照供背屏下次加载时读取，不主动唤醒背屏。
 
-同一模块 id 更新时必须增加 [模块描述](<module.json>) 的 `versionCode`。当前 `version` 为 `0.6.1`，`versionCode` 为 `15`。桥保留模块 storage 和 config。
+同一模块 id 更新时必须增加 [模块描述](<module.json>) 的 `versionCode`。当前 `version` 为 `0.6.2`，`versionCode` 为 `16`。桥保留模块 storage 和 config。
 
 ## 功能
 
@@ -39,6 +39,8 @@
 Codex 使用官方客户端设备码与 ChatGPT 用量接口。Cursor 使用官网未公开的 `GET https://cursor.com/api/usage-summary`，不是官方 Admin API；兼容个人套餐和接口返回的团队席位个人预算／共享池，缺少额度不显示为 0。Cursor 会话过期后需重新网页登录，不自动续期；手机 WebView 的登录与团队 SSO 需本人账号实测。接口及账号可用性可能随服务端变化，离线测试不能替代本人账号实测。
 
 OpenCode Go 使用官方客户端同源的 `GET https://opencode.ai/zen/go/v1/usage`，凭据使用 Go 所在工作区的个人 API Key。每个窗口展示已用百分比，重置时间直接取接口返回值；Go / Go Plus / Go Teams 统一显示 GO 系列徽章。401 提示 Key 失效，未订阅和访问受限分别提示；刷新失败保留上次数据。请求经原生桥发送且不携带 Cookie，不调用模型推理接口。真实账号的设置页查询、背屏与后台刷新需在手机验收。
+
+Antigravity 用量汇总与模型配额统一查询个人套餐使用的 `daily-cloudcode-pa.googleapis.com`，账号与套餐发现保留 `cloudcode-pa.googleapis.com`。设置页、背屏与后台共用这一路径；查询失败保留上次成功数据。
 
 OpenCode 静态图标来自 [官方仓库](<https://github.com/anomalyco/opencode>)，MIT 许可随 assets 安装；升级后请更新卡片资源并重新应用。
 
